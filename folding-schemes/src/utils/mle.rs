@@ -71,10 +71,10 @@ mod tests {
         utils::multilinear_polynomial::tests::fix_last_variables,
         utils::{hypercube::BooleanHypercube, vec::tests::to_F_matrix},
     };
-    use ark_poly::MultilinearExtension;
+    use ark_poly::{MultilinearExtension, Polynomial};
     use ark_std::Zero;
 
-    use ark_pallas::Fr;
+    use ark_grumpkin::Fr;
 
     #[test]
     fn test_matrix_to_mle() {

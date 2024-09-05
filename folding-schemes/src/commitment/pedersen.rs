@@ -2,14 +2,15 @@ use ark_ec::CurveGroup;
 use ark_ff::Field;
 use ark_r1cs_std::{boolean::Boolean, groups::GroupOpsBounds, prelude::CurveVar};
 use ark_relations::r1cs::SynthesisError;
-use ark_std::Zero;
+use ark_std::{end_timer, start_timer, Zero};
 use ark_std::{rand::RngCore, UniformRand};
 use core::marker::PhantomData;
+use std::sync::Arc;
 
 use super::CommitmentScheme;
 use crate::transcript::Transcript;
 use crate::utils::vec::{vec_add, vec_scalar_mul};
-use crate::Error;
+use crate::{Error, MSM};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Proof<C: CurveGroup> {
@@ -18,10 +19,26 @@ pub struct Proof<C: CurveGroup> {
     pub r_u: C::ScalarField, // blind
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub struct Params<C: CurveGroup> {
+pub struct Params<C: CurveGroup>
+where
+    C::Config: MSM<C>,
+{
     pub h: C,
     pub generators: Vec<C::Affine>,
+    pub device_generators: Arc<icicle_cuda_runtime::memory::DeviceVec<<C::Config as MSM<C>>::T>>,
+}
+
+impl<C: CurveGroup> Clone for Params<C>
+where
+    C::Config: MSM<C>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            h: self.h.clone(),
+            generators: self.generators.clone(),
+            device_generators: self.device_generators.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -30,7 +47,10 @@ pub struct Pedersen<C: CurveGroup, const H: bool = false> {
 }
 
 /// Implements the CommitmentScheme trait for Pedersen commitments
-impl<C: CurveGroup, const H: bool> CommitmentScheme<C, H> for Pedersen<C, H> {
+impl<C: CurveGroup, const H: bool> CommitmentScheme<C, H> for Pedersen<C, H>
+where
+    C::Config: MSM<C>,
+{
     type ProverParams = Params<C>;
     type VerifierParams = Params<C>;
     type Proof = Proof<C>;
@@ -38,7 +58,7 @@ impl<C: CurveGroup, const H: bool> CommitmentScheme<C, H> for Pedersen<C, H> {
     type Challenge = C::ScalarField;
 
     fn setup(
-        mut rng: impl RngCore,
+        mut rng: &mut impl RngCore,
         len: usize,
     ) -> Result<(Self::ProverParams, Self::VerifierParams), Error> {
         let generators: Vec<C::Affine> = std::iter::repeat_with(|| C::Affine::rand(&mut rng))
@@ -46,6 +66,7 @@ impl<C: CurveGroup, const H: bool> CommitmentScheme<C, H> for Pedersen<C, H> {
             .collect();
         let p = Params::<C> {
             h: C::rand(&mut rng),
+            device_generators: Arc::new(C::Config::precompute(&generators)),
             generators,
         };
         Ok((p.clone(), p))
@@ -62,13 +83,21 @@ impl<C: CurveGroup, const H: bool> CommitmentScheme<C, H> for Pedersen<C, H> {
         if !H && (!r.is_zero()) {
             return Err(Error::BlindingNotZero);
         }
+        if v.is_empty() {
+            return Ok(params.h.mul(r));
+        }
+
+        let timer = start_timer!(|| "MSM on GPU");
+        let msm = <C::Config as MSM<C>>::var_msm_precomputed(&params.device_generators, &v, 0);
+        end_timer!(timer);
+        // assert_eq!(msm, C::msm_unchecked(&params.generators[..v.len()], &v));
 
         // h⋅r + <g, v>
         // use msm_unchecked because we already ensured at the if that lengths match
         if !H {
-            return Ok(C::msm_unchecked(&params.generators[..v.len()], v));
+            return Ok(msm);
         }
-        Ok(params.h.mul(r) + C::msm_unchecked(&params.generators[..v.len()], v))
+        Ok(params.h.mul(r) + msm)
     }
 
     fn prove(
@@ -85,7 +114,7 @@ impl<C: CurveGroup, const H: bool> CommitmentScheme<C, H> for Pedersen<C, H> {
 
         // R = h⋅r_1 + <g, d>
         // use msm_unchecked because we already ensured at the if that lengths match
-        let mut R: C = C::msm_unchecked(&params.generators[..d.len()], &d);
+        let mut R: C = <C::Config as MSM<C>>::var_msm(&params.generators, &d, 0);
         if H {
             R += params.h.mul(r1);
         }
@@ -158,7 +187,7 @@ impl<C: CurveGroup, const H: bool> CommitmentScheme<C, H> for Pedersen<C, H> {
         // check that: R + cm⋅e == h⋅r_u + <g, u>
         let lhs = proof.R + cm.mul(e);
         // use msm_unchecked because we already ensured at the if that lengths match
-        let mut rhs = C::msm_unchecked(&params.generators[..proof.u.len()], &proof.u);
+        let mut rhs = <C::Config as MSM<C>>::var_msm(&params.generators, &proof.u, 0);
         if H {
             rhs += params.h.mul(proof.r_u);
         }
@@ -181,14 +210,13 @@ where
     _gc: PhantomData<GC>,
 }
 
-use ark_r1cs_std::ToBitsGadget;
+use ark_r1cs_std::convert::ToBitsGadget;
 impl<C, GC, const H: bool> PedersenGadget<C, GC, H>
 where
     C: CurveGroup,
     GC: CurveVar<C, CF<C>>,
 
     <C as ark_ec::CurveGroup>::BaseField: ark_ff::PrimeField,
-    for<'a> &'a GC: GroupOpsBounds<'a, C, GC>,
 {
     pub fn commit(
         h: GC,
@@ -210,7 +238,7 @@ where
 #[cfg(test)]
 mod tests {
     use ark_ff::{BigInteger, PrimeField};
-    use ark_pallas::{constraints::GVar, Fq, Fr, Projective};
+    use ark_grumpkin::{constraints::GVar, Fq, Fr, Projective};
     use ark_r1cs_std::{alloc::AllocVar, eq::EqGadget};
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::UniformRand;

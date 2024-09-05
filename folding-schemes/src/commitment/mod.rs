@@ -3,7 +3,7 @@ use ark_std::fmt::Debug;
 use ark_std::rand::RngCore;
 
 use crate::transcript::Transcript;
-use crate::Error;
+use crate::{Error, MSM};
 
 pub mod ipa;
 pub mod kzg;
@@ -11,15 +11,18 @@ pub mod pedersen;
 
 /// CommitmentScheme defines the vector commitment scheme trait. Where `H` indicates if to use the
 /// commitment in hiding mode or not.
-pub trait CommitmentScheme<C: CurveGroup, const H: bool = false>: Clone + Debug {
-    type ProverParams: Clone + Debug;
-    type VerifierParams: Clone + Debug;
+pub trait CommitmentScheme<C: CurveGroup, const H: bool = false>: Clone + Debug
+where
+    C::Config: MSM<C>,
+{
+    type ProverParams: Clone;
+    type VerifierParams: Clone;
     type Proof: Clone + Debug;
     type ProverChallenge: Clone + Debug;
     type Challenge: Clone + Debug;
 
     fn setup(
-        rng: impl RngCore,
+        rng: &mut impl RngCore,
         len: usize,
     ) -> Result<(Self::ProverParams, Self::VerifierParams), Error>;
 
@@ -139,7 +142,8 @@ mod tests {
         v_1: &[C::ScalarField],
         v_2: &[C::ScalarField],
     ) where
-        <C as ark_ec::Group>::ScalarField: Absorb,
+        C::ScalarField: Absorb,
+        C::Config: MSM<C>,
     {
         // compute the commitment of the two vectors using the given CommitmentScheme
         let cm_1 = CS::commit(prover_params, v_1, &C::ScalarField::zero()).unwrap();

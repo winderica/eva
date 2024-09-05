@@ -5,7 +5,7 @@
 /// vectors indistinctly, and the arkworks KZG10 implementation contains all the methods under the
 /// same trait, which requires the Pairing trait, where the prover does not need access to the
 /// Pairing but only to G1.
-use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
+use ark_ec::{pairing::Pairing, CurveGroup};
 use ark_ff::PrimeField;
 use ark_poly::{
     univariate::{DenseOrSparsePolynomial, DensePolynomial},
@@ -21,9 +21,9 @@ use core::marker::PhantomData;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use super::CommitmentScheme;
-use crate::transcript::Transcript;
 use crate::utils::vec::poly_from_vec;
 use crate::Error;
+use crate::{transcript::Transcript, MSM};
 
 /// ProverKey defines a similar struct as in ark_poly_commit::kzg10::Powers, but instead of
 /// depending on the Pairing trait it depends on the CurveGroup trait.
@@ -48,6 +48,7 @@ pub struct KZG<'a, E: Pairing, const H: bool = false> {
 impl<'a, E, const H: bool> CommitmentScheme<E::G1, H> for KZG<'a, E, H>
 where
     E: Pairing,
+    <E::G1 as CurveGroup>::Config: MSM<E::G1>,
 {
     type ProverParams = ProverKey<'a, E::G1>;
     type VerifierParams = VerifierKey<E>;
@@ -58,7 +59,7 @@ where
     /// setup returns the tuple (ProverKey, VerifierKey). For real world deployments the setup must
     /// be computed in the most trustless way possible, usually through a MPC ceremony.
     fn setup(
-        mut rng: impl RngCore,
+        mut rng: &mut impl RngCore,
         len: usize,
     ) -> Result<(Self::ProverParams, Self::VerifierParams), Error> {
         let len = len.next_power_of_two();
@@ -96,11 +97,14 @@ where
         let polynomial = poly_from_vec(v.to_vec())?;
         check_degree_is_too_large(polynomial.degree(), params.powers_of_g.len())?;
 
-        let (num_leading_zeros, plain_coeffs) =
-            skip_first_zero_coeffs_and_convert_to_bigints(&polynomial);
-        let commitment = <E::G1 as VariableBaseMSM>::msm_bigint(
-            &params.powers_of_g[num_leading_zeros..],
-            &plain_coeffs,
+        let num_leading_zeros = skip_first_zero_coeffs(&polynomial);
+        if polynomial[num_leading_zeros..].is_empty() {
+            return Ok(E::G1::zero());
+        }
+        let commitment = <<E::G1 as CurveGroup>::Config as MSM<E::G1>>::var_msm(
+            &params.powers_of_g,
+            &polynomial[num_leading_zeros..],
+            num_leading_zeros,
         );
         Ok(commitment)
     }
@@ -157,11 +161,11 @@ where
         };
 
         check_degree_is_too_large(witness_poly.degree(), params.powers_of_g.len())?;
-        let (num_leading_zeros, witness_coeffs) =
-            skip_first_zero_coeffs_and_convert_to_bigints(&witness_poly);
-        let proof = <E::G1 as VariableBaseMSM>::msm_bigint(
-            &params.powers_of_g[num_leading_zeros..],
-            &witness_coeffs,
+        let num_leading_zeros = skip_first_zero_coeffs(&polynomial);
+        let proof = <<E::G1 as CurveGroup>::Config as MSM<E::G1>>::var_msm(
+            &params.powers_of_g,
+            &witness_poly[num_leading_zeros..],
+            num_leading_zeros,
         );
 
         Ok(Proof { eval, proof })
@@ -221,15 +225,12 @@ fn check_degree_is_too_large(
     }
 }
 
-fn skip_first_zero_coeffs_and_convert_to_bigints<F: PrimeField, P: DenseUVPolynomial<F>>(
-    p: &P,
-) -> (usize, Vec<F::BigInt>) {
+fn skip_first_zero_coeffs<F: PrimeField, P: DenseUVPolynomial<F>>(p: &P) -> usize {
     let mut num_leading_zeros = 0;
     while num_leading_zeros < p.coeffs().len() && p.coeffs()[num_leading_zeros].is_zero() {
         num_leading_zeros += 1;
     }
-    let coeffs = convert_to_bigints(&p.coeffs()[num_leading_zeros..]);
-    (num_leading_zeros, coeffs)
+    num_leading_zeros
 }
 
 fn convert_to_bigints<F: PrimeField>(p: &[F]) -> Vec<F::BigInt> {

@@ -1,5 +1,5 @@
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::{CurveGroup, Group};
+use ark_ec::CurveGroup;
 use ark_ff::{Field, PrimeField};
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseUVPolynomial, Polynomial};
@@ -39,7 +39,7 @@ pub struct NIMFS<C: CurveGroup, T: Transcript<C>> {
 
 impl<C: CurveGroup, T: Transcript<C>> NIMFS<C, T>
 where
-    <C as Group>::ScalarField: Absorb,
+    C::ScalarField: Absorb,
 {
     pub fn fold(
         lcccs: &[LCCCS<C>],
@@ -379,7 +379,7 @@ pub mod tests {
     use ark_std::UniformRand;
 
     use crate::commitment::{pedersen::Pedersen, CommitmentScheme};
-    use ark_pallas::{Fr, Projective};
+    use ark_grumpkin::{Fr, Projective};
 
     #[test]
     fn test_fold() {

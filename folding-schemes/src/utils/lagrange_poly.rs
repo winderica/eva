@@ -48,12 +48,13 @@ pub fn compute_lagrange_interpolated_poly<F: PrimeField>(p_i: &[F]) -> DensePoly
 #[cfg(test)]
 mod tests {
 
+    use std::error::Error;
+
     use crate::utils::espresso::sum_check::verifier::interpolate_uni_poly;
     use crate::utils::lagrange_poly::compute_lagrange_interpolated_poly;
     use ark_pallas::Fr;
     use ark_poly::{univariate::DensePolynomial, DenseUVPolynomial, Polynomial};
     use ark_std::{vec::Vec, UniformRand};
-    use espresso_subroutines::poly_iop::prelude::PolyIOPErrors;
 
     #[test]
     fn test_compute_lagrange_interpolated_poly() {
@@ -76,7 +77,7 @@ mod tests {
     }
 
     #[test]
-    fn test_interpolation() -> Result<(), PolyIOPErrors> {
+    fn test_interpolation() -> Result<(), Box<dyn Error>> {
         let mut prng = ark_std::test_rng();
 
         // test a polynomial with 20 known points, i.e., with degree 19

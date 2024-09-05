@@ -1,23 +1,50 @@
+use std::sync::Arc;
+
 use ark_ff::PrimeField;
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, Evaluations, GeneralEvaluationDomain,
 };
 pub use ark_relations::r1cs::Matrix as R1CSMatrix;
 use ark_std::cfg_iter;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+use rayon::prelude::*;
 
-use crate::Error;
+use crate::{Error, MVM};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct SparseMatrix<F: PrimeField> {
     pub n_rows: usize,
     pub n_cols: usize,
     /// coeffs = R1CSMatrix = Vec<Vec<(F, usize)>>, which contains each row and the F is the value
     /// of the coefficient and the usize indicates the column position
     pub coeffs: R1CSMatrix<F>,
+    pub cuda: Arc<CudaSparseMatrix<F>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[repr(C)]
+pub struct CSRSparseMatrix<F> {
+    pub data: Vec<F>,
+    pub col_idx: Vec<i32>,
+    pub row_ptr: Vec<i32>,
+}
+
+pub struct CudaSparseMatrix<F> {
+    pub data: icicle_cuda_runtime::memory::DeviceVec<F>,
+    pub row_ptr: icicle_cuda_runtime::memory::DeviceVec<i32>,
+    pub col_idx: icicle_cuda_runtime::memory::DeviceVec<i32>,
 }
 
 impl<F: PrimeField> SparseMatrix<F> {
+    pub fn new(n_rows: usize, n_cols: usize, coeffs: Vec<Vec<(F, usize)>>) -> Self where F: MVM {
+        let csr = Self::to_csr(n_rows, n_cols, &coeffs);
+        SparseMatrix {
+            cuda: Arc::new(MVM::prepare_matrix(&csr)),
+            n_rows,
+            n_cols,
+            coeffs,
+        }
+    }
+
     pub fn to_dense(&self) -> Vec<Vec<F>> {
         let mut r: Vec<Vec<F>> = vec![vec![F::zero(); self.n_cols]; self.n_rows];
         for (row_i, row) in self.coeffs.iter().enumerate() {
@@ -27,14 +54,36 @@ impl<F: PrimeField> SparseMatrix<F> {
         }
         r
     }
+
+    pub fn to_csr(n_rows: usize, n_cols: usize, coeffs: &[Vec<(F, usize)>]) -> CSRSparseMatrix<F> {
+        let mut data = coeffs
+            .iter()
+            .flat_map(|row| row.iter().map(|(v, _)| *v))
+            .collect::<Vec<_>>();
+        let mut indices = coeffs
+            .iter()
+            .flat_map(|row| row.iter().map(|(_, i)| *i as i32))
+            .collect::<Vec<_>>();
+        let mut indptr = vec![0];
+        let mut i = 0;
+        for row in coeffs.iter() {
+            i += row.len();
+            indptr.push(i as i32);
+        }
+        data.shrink_to_fit();
+        indices.shrink_to_fit();
+        indptr.shrink_to_fit();
+
+        CSRSparseMatrix {
+            data,
+            col_idx: indices,
+            row_ptr: indptr,
+        }
+    }
 }
 
-pub fn dense_matrix_to_sparse<F: PrimeField>(m: Vec<Vec<F>>) -> SparseMatrix<F> {
-    let mut r = SparseMatrix::<F> {
-        n_rows: m.len(),
-        n_cols: m[0].len(),
-        coeffs: Vec::new(),
-    };
+pub fn dense_matrix_to_sparse<F: MVM>(m: Vec<Vec<F>>) -> SparseMatrix<F> {
+    let mut coeffs = vec![];
     for m_row in m.iter() {
         let mut row: Vec<(F, usize)> = Vec::new();
         for (col_i, value) in m_row.iter().enumerate() {
@@ -42,9 +91,9 @@ pub fn dense_matrix_to_sparse<F: PrimeField>(m: Vec<Vec<F>>) -> SparseMatrix<F> 
                 row.push((*value, col_i));
             }
         }
-        r.coeffs.push(row);
+        coeffs.push(row);
     }
-    r
+    SparseMatrix::new(m.len(), m[0].len(), coeffs)
 }
 
 pub fn vec_add<F: PrimeField>(a: &[F], b: &[F]) -> Result<Vec<F>, Error> {
@@ -56,7 +105,7 @@ pub fn vec_add<F: PrimeField>(a: &[F], b: &[F]) -> Result<Vec<F>, Error> {
             b.len(),
         ));
     }
-    Ok(a.iter().zip(b.iter()).map(|(x, y)| *x + y).collect())
+    Ok(cfg_iter!(a).zip(b).map(|(x, y)| *x + y).collect())
 }
 
 pub fn vec_sub<F: PrimeField>(a: &[F], b: &[F]) -> Result<Vec<F>, Error> {
@@ -68,15 +117,15 @@ pub fn vec_sub<F: PrimeField>(a: &[F], b: &[F]) -> Result<Vec<F>, Error> {
             b.len(),
         ));
     }
-    Ok(a.iter().zip(b.iter()).map(|(x, y)| *x - y).collect())
+    Ok(cfg_iter!(a).zip(b).map(|(x, y)| *x - y).collect())
 }
 
 pub fn vec_scalar_mul<F: PrimeField>(vec: &[F], c: &F) -> Vec<F> {
-    vec.iter().map(|a| *a * c).collect()
+    cfg_iter!(vec).map(|a| *a * c).collect()
 }
 
 pub fn is_zero_vec<F: PrimeField>(vec: &[F]) -> bool {
-    vec.iter().all(|a| a.is_zero())
+    cfg_iter!(vec).all(|a| a.is_zero())
 }
 
 pub fn mat_vec_mul<F: PrimeField>(M: &Vec<Vec<F>>, z: &[F]) -> Result<Vec<F>, Error> {
@@ -110,13 +159,14 @@ pub fn mat_vec_mul_sparse<F: PrimeField>(M: &SparseMatrix<F>, z: &[F]) -> Result
             z.len(),
         ));
     }
-    let mut res = vec![F::zero(); M.n_rows];
-    for (row_i, row) in M.coeffs.iter().enumerate() {
-        for &(value, col_i) in row.iter() {
-            res[row_i] += value * z[col_i];
-        }
-    }
-    Ok(res)
+
+    Ok(cfg_iter!(M.coeffs)
+        .map(|row| {
+            row.iter()
+                .map(|&(value, col_i)| value * z[col_i])
+                .sum::<F>()
+        })
+        .collect())
 }
 
 pub fn hadamard<F: PrimeField>(a: &[F], b: &[F]) -> Result<Vec<F>, Error> {
@@ -141,9 +191,9 @@ pub fn poly_from_vec<F: PrimeField>(v: Vec<F>) -> Result<DensePolynomial<F>, Err
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use ark_pallas::Fr;
+    use ark_grumpkin::Fr;
 
-    pub fn to_F_matrix<F: PrimeField>(M: Vec<Vec<usize>>) -> SparseMatrix<F> {
+    pub fn to_F_matrix<F: MVM>(M: Vec<Vec<usize>>) -> SparseMatrix<F> {
         dense_matrix_to_sparse(to_F_dense_matrix(M))
     }
     pub fn to_F_dense_matrix<F: PrimeField>(M: Vec<Vec<usize>>) -> Vec<Vec<F>> {

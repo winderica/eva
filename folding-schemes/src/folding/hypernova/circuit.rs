@@ -5,8 +5,8 @@ use crate::{ccs::CCS, folding::circuits::utils::EqEvalGadget};
 use ark_ec::CurveGroup;
 use ark_r1cs_std::{
     alloc::AllocVar,
+    convert::ToBitsGadget,
     fields::{fp::FpVar, FieldVar},
-    ToBitsGadget,
 };
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 use ark_std::Zero;
@@ -164,7 +164,7 @@ mod tests {
         },
         utils::virtual_polynomial::eq_eval,
     };
-    use ark_pallas::{Fr, Projective};
+    use ark_grumpkin::{Fr, Projective};
     use ark_r1cs_std::{alloc::AllocVar, fields::fp::FpVar, R1CSVar};
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::{test_rng, UniformRand};

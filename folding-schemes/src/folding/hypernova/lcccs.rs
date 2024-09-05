@@ -14,7 +14,7 @@ use crate::commitment::{
 };
 use crate::utils::mle::{matrix_to_mle, vec_to_mle};
 use crate::utils::virtual_polynomial::VirtualPolynomial;
-use crate::Error;
+use crate::{Error, MSM};
 
 /// Linearized Committed CCS instance
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -43,7 +43,10 @@ impl<C: CurveGroup> CCS<C> {
         rng: &mut R,
         pedersen_params: &PedersenParams<C>,
         z: &[C::ScalarField],
-    ) -> Result<(LCCCS<C>, Witness<C::ScalarField>), Error> {
+    ) -> Result<(LCCCS<C>, Witness<C::ScalarField>), Error>
+    where
+        C::Config: MSM<C>,
+    {
         let w: Vec<C::ScalarField> = z[(1 + self.l)..].to_vec();
         let r_w = C::ScalarField::rand(rng);
         let C = Pedersen::<C, true>::commit(pedersen_params, &w, &r_w)?;
@@ -94,7 +97,10 @@ impl<C: CurveGroup> LCCCS<C> {
         pedersen_params: &PedersenParams<C>,
         ccs: &CCS<C>,
         w: &Witness<C::ScalarField>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        C::Config: MSM<C>,
+    {
         // check that C is the commitment of w. Notice that this is not verifying a Pedersen
         // opening, but checking that the Commitment comes from committing to the witness.
         if self.C != Pedersen::<C, true>::commit(pedersen_params, &w.w, &w.r_w)? {
@@ -120,7 +126,7 @@ pub mod tests {
     use crate::utils::hypercube::BooleanHypercube;
     use ark_std::test_rng;
 
-    use ark_pallas::{Fr, Projective};
+    use ark_grumpkin::{Fr, Projective};
 
     #[test]
     /// Test linearized CCCS v_j against the L_j(x)

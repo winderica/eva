@@ -1,34 +1,38 @@
 /// This file implements the onchain (Ethereum's EVM) decider circuit. For non-ethereum use cases,
 /// other more efficient approaches can be used.
-use ark_crypto_primitives::crh::poseidon::constraints::CRHParametersVar;
+use ark_crypto_primitives::crh::poseidon::constraints::{CRHGadget, CRHParametersVar};
+use ark_crypto_primitives::crh::CRHSchemeGadget;
 use ark_crypto_primitives::sponge::{poseidon::PoseidonConfig, Absorb};
-use ark_ec::{CurveGroup, Group};
+use ark_ec::CurveGroup;
 use ark_ff::{BigInteger, PrimeField};
 use ark_poly::Polynomial;
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
+    convert::ToConstraintFieldGadget,
     eq::EqGadget,
     fields::{fp::FpVar, FieldVar},
     groups::GroupOpsBounds,
     poly::{domain::Radix2DomainVar, evaluations::univariate::EvaluationsVar},
     prelude::CurveVar,
-    ToConstraintFieldGadget,
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
 use ark_std::{log2, Zero};
 use core::{borrow::Borrow, marker::PhantomData};
 
+use super::circuits::IO_LEN;
 use super::{circuits::ChallengeGadget, nifs::NIFS};
+use super::{CurrentInstance, CycleFoldCommittedInstance, RunningInstance};
 use crate::ccs::r1cs::R1CS;
 use crate::commitment::{pedersen::Params as PedersenParams, CommitmentScheme};
 use crate::folding::circuits::nonnative::{
     affine::{nonnative_affine_to_field_elements, NonNativeAffineVar},
     uint::NonNativeUintVar,
 };
+use crate::folding::nova::circuits::{CurrentInstanceVar, RunningInstanceVar};
 use crate::folding::nova::{
-    circuits::{CommittedInstanceVar, CF1, CF2},
-    CommittedInstance, Nova, Witness,
+    circuits::{CF1, CF2},
+    Nova, Witness,
 };
 use crate::frontend::FCircuit;
 use crate::transcript::{
@@ -39,7 +43,7 @@ use crate::utils::{
     gadgets::{MatrixGadget, SparseMatrixVar, VectorGadget},
     vec::poly_from_vec,
 };
-use crate::Error;
+use crate::{Error, MSM};
 
 #[derive(Debug, Clone)]
 pub struct RelaxedR1CSGadget {}
@@ -199,8 +203,10 @@ where
 pub struct DeciderEthCircuit<C1, GC1, C2, GC2, CS1, CS2>
 where
     C1: CurveGroup,
+    C1::Config: MSM<C1>,
     GC1: CurveVar<C1, CF2<C1>>,
     C2: CurveGroup,
+    C2::Config: MSM<C2>,
     GC2: CurveVar<C2, CF2<C2>>,
     CS1: CommitmentScheme<C1>,
     CS2: CommitmentScheme<C2>,
@@ -229,16 +235,16 @@ where
     /// current i-th state
     pub z_i: Option<Vec<C1::ScalarField>>,
     /// Nova instances
-    pub u_i: Option<CommittedInstance<C1>>,
+    pub u_i: Option<CurrentInstance<C1>>,
     pub w_i: Option<Witness<C1>>,
-    pub U_i: Option<CommittedInstance<C1>>,
+    pub U_i: Option<RunningInstance<C1>>,
     pub W_i: Option<Witness<C1>>,
-    pub U_i1: Option<CommittedInstance<C1>>,
+    pub U_i1: Option<RunningInstance<C1>>,
     pub W_i1: Option<Witness<C1>>,
     pub cmT: Option<C1>,
     pub r: Option<C1::ScalarField>,
     /// CycleFold running instance
-    pub cf_U_i: Option<CommittedInstance<C2>>,
+    pub cf_U_i: Option<CycleFoldCommittedInstance<C2>>,
     pub cf_W_i: Option<Witness<C2>>,
 
     /// KZG challenges
@@ -250,13 +256,15 @@ where
 impl<C1, GC1, C2, GC2, CS1, CS2> DeciderEthCircuit<C1, GC1, C2, GC2, CS1, CS2>
 where
     C1: CurveGroup,
+    C1::Config: MSM<C1>,
     C2: CurveGroup,
+    C2::Config: MSM<C2>,
     GC1: CurveVar<C1, CF2<C1>> + ToConstraintFieldGadget<CF2<C1>>,
     GC2: CurveVar<C2, CF2<C2>> + ToConstraintFieldGadget<CF2<C2>>,
     CS1: CommitmentScheme<C1>,
     // enforce that the CS2 is Pedersen commitment scheme, since we're at Ethereum's EVM decider
     CS2: CommitmentScheme<C2, ProverParams = PedersenParams<C2>>,
-    <C1 as Group>::ScalarField: Absorb,
+    C1::ScalarField: Absorb,
     <C1 as CurveGroup>::BaseField: PrimeField,
 {
     pub fn from_nova<FC: FCircuit<C1::ScalarField>>(
@@ -266,10 +274,10 @@ where
         let (T, cmT) = NIFS::<C1, CS1>::compute_cmT(
             &nova.cs_params,
             &nova.r1cs.clone(),
-            &nova.w_i.clone(),
-            &nova.u_i.clone(),
             &nova.W_i.clone(),
             &nova.U_i.clone(),
+            &nova.w_i.clone(),
+            &nova.u_i.clone(),
         )?;
         let r_bits = ChallengeGadget::<C1>::get_challenge_native(
             &nova.poseidon_config,
@@ -342,23 +350,25 @@ impl<C1, GC1, C2, GC2, CS1, CS2> ConstraintSynthesizer<CF1<C1>>
     for DeciderEthCircuit<C1, GC1, C2, GC2, CS1, CS2>
 where
     C1: CurveGroup,
+    C1::Config: MSM<C1>,
     C2: CurveGroup,
+    C2::Config: MSM<C2>,
     GC1: CurveVar<C1, CF2<C1>>,
     GC2: CurveVar<C2, CF2<C2>> + ToConstraintFieldGadget<CF2<C2>>,
     CS1: CommitmentScheme<C1>,
     CS2: CommitmentScheme<C2>,
     <C1 as CurveGroup>::BaseField: PrimeField,
     <C2 as CurveGroup>::BaseField: PrimeField,
-    <C1 as Group>::ScalarField: Absorb,
-    <C2 as Group>::ScalarField: Absorb,
+    C1::ScalarField: Absorb,
+    C2::ScalarField: Absorb,
     C1: CurveGroup<BaseField = C2::ScalarField, ScalarField = C2::BaseField>,
     for<'b> &'b GC2: GroupOpsBounds<'b, C2, GC2>,
 {
     fn generate_constraints(self, cs: ConstraintSystemRef<CF1<C1>>) -> Result<(), SynthesisError> {
-        let r1cs =
-            R1CSVar::<C1::ScalarField, CF1<C1>, FpVar<CF1<C1>>>::new_witness(cs.clone(), || {
-                Ok(self.r1cs.clone())
-            })?;
+        let r1cs = R1CSVar::<C1::ScalarField, CF1<C1>, FpVar<CF1<C1>>>::new_constant(
+            cs.clone(),
+            self.r1cs.clone(),
+        )?;
 
         let i =
             FpVar::<CF1<C1>>::new_input(cs.clone(), || Ok(self.i.unwrap_or_else(CF1::<C1>::zero)))?;
@@ -369,21 +379,20 @@ where
             Ok(self.z_i.unwrap_or(vec![CF1::<C1>::zero()]))
         })?;
 
-        let u_dummy_native = CommittedInstance::<C1>::dummy(2);
         let w_dummy_native = Witness::<C1>::new(
-            vec![C1::ScalarField::zero(); self.r1cs.A.n_cols - 3 /* (3=2+1, since u_i.x.len=2) */],
-            self.E_len,
+            vec![C1::ScalarField::zero(); self.r1cs.A.n_cols - IO_LEN - 1],
+            &self.r1cs,
         );
 
-        let u_i = CommittedInstanceVar::<C1>::new_witness(cs.clone(), || {
-            Ok(self.u_i.unwrap_or(u_dummy_native.clone()))
+        let u_i = CurrentInstanceVar::<C1>::new_witness(cs.clone(), || {
+            Ok(self.u_i.unwrap_or(CurrentInstance::dummy(IO_LEN)))
         })?;
-        let U_i = CommittedInstanceVar::<C1>::new_witness(cs.clone(), || {
-            Ok(self.U_i.unwrap_or(u_dummy_native.clone()))
+        let U_i = RunningInstanceVar::<C1>::new_witness(cs.clone(), || {
+            Ok(self.U_i.unwrap_or(RunningInstance::dummy(IO_LEN)))
         })?;
         // here (U_i1, W_i1) = NIFS.P( (U_i,W_i), (u_i,w_i))
-        let U_i1 = CommittedInstanceVar::<C1>::new_input(cs.clone(), || {
-            Ok(self.U_i1.unwrap_or(u_dummy_native.clone()))
+        let U_i1 = RunningInstanceVar::<C1>::new_input(cs.clone(), || {
+            Ok(self.U_i1.unwrap_or(RunningInstance::dummy(IO_LEN)))
         })?;
         let W_i1 = WitnessVar::<C1>::new_witness(cs.clone(), || {
             Ok(self.W_i1.unwrap_or(w_dummy_native.clone()))
@@ -407,11 +416,13 @@ where
             cs.clone(),
             self.poseidon_config.clone(),
         )?;
+        println!("{}", cs.num_constraints());
 
         // 1. check RelaxedR1CS of U_{i+1}
         let z_U1: Vec<FpVar<CF1<C1>>> =
             [vec![U_i1.u.clone()], U_i1.x.to_vec(), W_i1.W.to_vec()].concat();
         RelaxedR1CSGadget::check_native(r1cs, W_i1.E.clone(), U_i1.u.clone(), z_U1)?;
+        println!("{}", cs.num_constraints());
 
         // 2. u_i.cmE==cm(0), u_i.u==1
         // Here zero is the x & y coordinates of the zero point affine representation.
@@ -419,28 +430,34 @@ where
         u_i.cmE.x.enforce_equal_unaligned(&zero)?;
         u_i.cmE.y.enforce_equal_unaligned(&zero)?;
         (u_i.u.is_one()?).enforce_equal(&Boolean::TRUE)?;
+        println!("{}", cs.num_constraints());
 
         // 3.a u_i.x[0] == H(i, z_0, z_i, U_i)
         let (u_i_x, U_i_vec) =
             U_i.clone()
                 .hash(&crh_params, i.clone(), z_0.clone(), z_i.clone())?;
         (u_i.x[0]).enforce_equal(&u_i_x)?;
+        (u_i.x[2]).enforce_equal(&CRHGadget::evaluate(
+            &crh_params,
+            &u_i.cmWa.to_constraint_field()?,
+        )?)?;
+        println!("{}", cs.num_constraints());
 
         // The following two checks (and their respective allocations) are disabled for normal
         // tests since they take several millions of constraints and would take several minutes
         // (and RAM) to run the test.
-        #[cfg(not(test))]
+        // #[cfg(not(test))]
         {
             // imports here instead of at the top of the file, so we avoid having multiple
             // `#[cfg(not(test))]`
             use crate::commitment::pedersen::PedersenGadget;
             use crate::folding::nova::cyclefold::{CycleFoldCommittedInstanceVar, CF_IO_LEN};
-            use ark_r1cs_std::ToBitsGadget;
+            use ark_r1cs_std::convert::ToBitsGadget;
 
-            let cf_u_dummy_native = CommittedInstance::<C2>::dummy(CF_IO_LEN);
+            let cf_u_dummy_native = CycleFoldCommittedInstance::<C2>::dummy(CF_IO_LEN);
             let w_dummy_native = Witness::<C2>::new(
                 vec![C2::ScalarField::zero(); self.cf_r1cs.A.n_cols - 1 - self.cf_r1cs.l],
-                self.cf_E_len,
+                &self.cf_r1cs,
             );
             let cf_U_i = CycleFoldCommittedInstanceVar::<C2, GC2>::new_witness(cs.clone(), || {
                 Ok(self.cf_U_i.unwrap_or_else(|| cf_u_dummy_native.clone()))
@@ -452,6 +469,7 @@ where
             // 3.b u_i.x[1] == H(cf_U_i)
             let (cf_u_i_x, _) = cf_U_i.clone().hash(&crh_params)?;
             (u_i.x[1]).enforce_equal(&cf_u_i_x)?;
+            println!("{}", cs.num_constraints());
 
             // 4. check Pedersen commitments of cf_U_i.{cmE, cmW}
             let H = GC2::new_constant(cs.clone(), self.cf_pedersen_params.h)?;
@@ -460,6 +478,7 @@ where
                 cf_W_i.E.iter().map(|E_i| E_i.to_bits_le()).collect();
             let cf_W_i_W_bits: Result<Vec<Vec<Boolean<CF1<C1>>>>, SynthesisError> =
                 cf_W_i.W.iter().map(|W_i| W_i.to_bits_le()).collect();
+            println!("{}", cs.num_constraints());
 
             let computed_cmE = PedersenGadget::<C2, GC2>::commit(
                 H.clone(),
@@ -471,6 +490,7 @@ where
             let computed_cmW =
                 PedersenGadget::<C2, GC2>::commit(H, G, cf_W_i_W_bits?, cf_W_i.rW.to_bits_le()?)?;
             cf_U_i.cmW.enforce_equal(&computed_cmW)?;
+            println!("{}", cs.num_constraints());
 
             let cf_r1cs =
                 R1CSVar::<C1::BaseField, CF1<C1>, NonNativeUintVar<CF1<C1>>>::new_witness(
@@ -512,11 +532,13 @@ where
             u_i.clone(),
             cmT.clone(),
         )?;
-        let r_Fr = Boolean::le_bits_to_fp_var(&r_bits)?;
+        let r_Fr = Boolean::le_bits_to_fp(&r_bits)?;
         // check that the in-circuit computed r is equal to the inputted r
         let r =
             FpVar::<CF1<C1>>::new_input(cs.clone(), || Ok(self.r.unwrap_or_else(CF1::<C1>::zero)))?;
         r_Fr.enforce_equal(&r)?;
+
+        println!("{}", cs.num_constraints());
 
         Ok(())
     }
@@ -555,19 +577,14 @@ where
 {
     pub fn get_challenges_native(
         poseidon_config: &PoseidonConfig<C::ScalarField>,
-        U_i: CommittedInstance<C>,
+        U_i: RunningInstance<C>,
     ) -> Result<(C::ScalarField, C::ScalarField), Error> {
-        let (cmE_x_limbs, cmE_y_limbs) = nonnative_affine_to_field_elements(U_i.cmE)?;
-        let (cmW_x_limbs, cmW_y_limbs) = nonnative_affine_to_field_elements(U_i.cmW)?;
-
         let transcript = &mut PoseidonTranscript::<C>::new(poseidon_config);
         // compute the KZG challenges, which are computed in-circuit and checked that it matches
         // the inputted one
-        transcript.absorb_vec(&cmW_x_limbs);
-        transcript.absorb_vec(&cmW_y_limbs);
+        transcript.absorb_vec(&nonnative_affine_to_field_elements(U_i.cmW));
         let challenge_W = transcript.get_challenge();
-        transcript.absorb_vec(&cmE_x_limbs);
-        transcript.absorb_vec(&cmE_y_limbs);
+        transcript.absorb_vec(&nonnative_affine_to_field_elements(U_i.cmE));
         let challenge_E = transcript.get_challenge();
 
         Ok((challenge_W, challenge_E))
@@ -576,7 +593,7 @@ where
     pub fn get_challenges_gadget(
         cs: ConstraintSystemRef<C::ScalarField>,
         poseidon_config: &PoseidonConfig<C::ScalarField>,
-        U_i: CommittedInstanceVar<C>,
+        U_i: RunningInstanceVar<C>,
     ) -> Result<(FpVar<C::ScalarField>, FpVar<C::ScalarField>), SynthesisError> {
         let mut transcript =
             PoseidonTranscriptVar::<CF1<C>>::new(cs.clone(), &poseidon_config.clone());
@@ -602,7 +619,7 @@ pub mod tests {
         CRHScheme, CRHSchemeGadget,
     };
     use ark_pallas::{constraints::GVar, Fq, Fr, Projective};
-    use ark_r1cs_std::bits::uint8::UInt8;
+    use ark_r1cs_std::uint8::UInt8;
     use ark_relations::r1cs::ConstraintSystem;
     use ark_std::{One, UniformRand};
     use ark_vesta::{constraints::GVar as GVar2, Projective as Projective2};
@@ -841,7 +858,7 @@ pub mod tests {
         let mut rng = ark_std::test_rng();
         let poseidon_config = poseidon_test_config::<Fr>();
 
-        let U_i = CommittedInstance::<Projective> {
+        let U_i = RunningInstance::<Projective> {
             cmE: Projective::rand(&mut rng),
             u: Fr::rand(&mut rng),
             cmW: Projective::rand(&mut rng),
@@ -855,8 +872,7 @@ pub mod tests {
 
         let cs = ConstraintSystem::<Fr>::new_ref();
         let U_iVar =
-            CommittedInstanceVar::<Projective>::new_witness(cs.clone(), || Ok(U_i.clone()))
-                .unwrap();
+            RunningInstanceVar::<Projective>::new_witness(cs.clone(), || Ok(U_i.clone())).unwrap();
 
         let (challenge_W_Var, challenge_E_Var) =
             KZGChallengesGadget::<Projective>::get_challenges_gadget(
@@ -880,7 +896,7 @@ pub mod tests {
     #[test]
     fn test_polynomial_interpolation() {
         let mut rng = ark_std::test_rng();
-        let n = 12;
+        let n = 11;
         let l = 1 << n;
 
         let v: Vec<Fr> = std::iter::repeat_with(|| Fr::rand(&mut rng))

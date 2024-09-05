@@ -1,6 +1,6 @@
 /// Implements the scheme described in [ProtoGalaxy](https://eprint.iacr.org/2023/1106.pdf)
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::{CurveGroup, Group};
+use ark_ec::{CurveGroup};
 use ark_ff::PrimeField;
 use ark_poly::{
     univariate::{DensePolynomial, SparsePolynomial},
@@ -30,7 +30,7 @@ pub struct Folding<C: CurveGroup> {
 }
 impl<C: CurveGroup> Folding<C>
 where
-    <C as Group>::ScalarField: Absorb,
+    C::ScalarField: Absorb,
     <C as CurveGroup>::BaseField: Absorb,
 {
     #![allow(clippy::type_complexity)]
@@ -380,7 +380,7 @@ fn eval_f<F: PrimeField>(r1cs: &R1CS<F>, w: &[F]) -> Result<Vec<F>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_pallas::{Fr, Projective};
+    use ark_grumpkin::{Fr, Projective};
     use ark_std::UniformRand;
 
     use crate::ccs::r1cs::tests::{get_test_r1cs, get_test_z};

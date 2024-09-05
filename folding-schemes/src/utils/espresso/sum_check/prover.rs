@@ -9,12 +9,12 @@
 
 //! Prover subroutines for a SumCheck protocol.
 
-use super::SumCheckProver;
+use super::{PolyIOPErrors, SumCheckProver};
 use crate::utils::{
     lagrange_poly::compute_lagrange_interpolated_poly, multilinear_polynomial::fix_variables,
     virtual_polynomial::VirtualPolynomial,
 };
-use ark_ec::CurveGroup;
+use ark_ec::{AdditiveGroup, CurveGroup};
 use ark_ff::Field;
 use ark_ff::{batch_inversion, PrimeField};
 use ark_poly::DenseMultilinearExtension;
@@ -23,7 +23,6 @@ use rayon::prelude::{IntoParallelIterator, IntoParallelRefIterator};
 use std::sync::Arc;
 
 use super::structs::{IOPProverMessage, IOPProverState};
-use espresso_subroutines::poly_iop::prelude::PolyIOPErrors;
 
 // #[cfg(feature = "parallel")]
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};

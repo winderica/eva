@@ -13,7 +13,7 @@ use crate::{
     transcript::Transcript,
     utils::virtual_polynomial::{VPAuxInfo, VirtualPolynomial},
 };
-use ark_ec::CurveGroup;
+use ark_ec::{AdditiveGroup, CurveGroup};
 use ark_ff::PrimeField;
 use ark_poly::univariate::DensePolynomial;
 use ark_poly::{DenseMultilinearExtension, DenseUVPolynomial, Polynomial};
@@ -23,12 +23,28 @@ use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 use crate::utils::sum_check::structs::IOPProverMessage;
 use crate::utils::sum_check::structs::IOPVerifierState;
 use ark_ff::Field;
-use espresso_subroutines::poly_iop::prelude::PolyIOPErrors;
 use structs::{IOPProof, IOPProverState};
 
 mod prover;
 pub mod structs;
 pub mod verifier;
+
+/// A `enum` specifying the possible failure modes of the PolyIOP.
+#[derive(Debug, thiserror::Error)]
+pub enum PolyIOPErrors {
+    /// Invalid Prover: {0}
+    #[error("Invalid Prover: {0}")]
+    InvalidProver(String),
+    /// Invalid Verifier: {0}
+    #[error("Invalid Verifier: {0}")]
+    InvalidVerifier(String),
+    /// Invalid Proof: {0}
+    #[error("Invalid Proof: {0}")]
+    InvalidProof(String),
+    /// Invalid parameters: {0}
+    #[error("Invalid parameters: {0}")]
+    InvalidParameters(String),
+}
 
 /// A generic sum-check trait over a curve group
 pub trait SumCheck<C: CurveGroup> {

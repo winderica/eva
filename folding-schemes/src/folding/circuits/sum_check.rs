@@ -8,7 +8,7 @@ use crate::{
     utils::sum_check::{structs::IOPProof, IOPSumCheck},
 };
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::{CurveGroup, Group};
+use ark_ec::CurveGroup;
 /// Heavily inspired from testudo: https://github.com/cryptonetlab/testudo/tree/master
 /// Some changes:
 /// - Typings to better stick to ark_poly's API
@@ -82,7 +82,7 @@ pub struct IOPProofVar<C: CurveGroup> {
 
 impl<C: CurveGroup> AllocVar<IOPProof<C::ScalarField>, C::ScalarField> for IOPProofVar<C>
 where
-    <C as Group>::ScalarField: Absorb,
+    C::ScalarField: Absorb,
 {
     fn new_variable<T: Borrow<IOPProof<C::ScalarField>>>(
         cs: impl Into<Namespace<C::ScalarField>>,
@@ -206,7 +206,7 @@ mod tests {
         num_vars: usize,
     ) -> TestSumCheckProof<C::ScalarField>
     where
-        <C as ark_ec::Group>::ScalarField: Absorb,
+        C::ScalarField: Absorb,
     {
         let mut rng = ark_std::test_rng();
         let poseidon_config: PoseidonConfig<C::ScalarField> =

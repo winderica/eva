@@ -11,7 +11,7 @@ use r1cs::R1CS;
 
 /// CCS represents the Customizable Constraint Systems structure defined in
 /// the [CCS paper](https://eprint.iacr.org/2023/552)
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Clone)]
 pub struct CCS<C: CurveGroup> {
     /// m: number of rows in M_i (such that M_i \in F^{m, n})
     pub m: usize,
@@ -95,6 +95,7 @@ impl<C: CurveGroup> CCS<C> {
     pub fn to_r1cs(self) -> R1CS<C::ScalarField> {
         R1CS::<C::ScalarField> {
             l: self.l,
+            q: 0,
             A: self.M[0].clone(),
             B: self.M[1].clone(),
             C: self.M[2].clone(),
@@ -105,11 +106,17 @@ impl<C: CurveGroup> CCS<C> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::ccs::r1cs::tests::{get_test_r1cs, get_test_z as r1cs_get_test_z};
+    use crate::{
+        ccs::r1cs::tests::{get_test_r1cs, get_test_z as r1cs_get_test_z},
+        MVM,
+    };
     use ark_ff::PrimeField;
-    use ark_pallas::Projective;
+    use ark_grumpkin::Projective;
 
-    pub fn get_test_ccs<C: CurveGroup>() -> CCS<C> {
+    pub fn get_test_ccs<C: CurveGroup>() -> CCS<C>
+    where
+        C::ScalarField: MVM,
+    {
         let r1cs = get_test_r1cs::<C::ScalarField>();
         CCS::<C>::from_r1cs(r1cs)
     }

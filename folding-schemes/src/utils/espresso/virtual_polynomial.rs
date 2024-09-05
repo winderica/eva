@@ -260,9 +260,9 @@ impl<F: PrimeField> VirtualPolynomial<F> {
             .flattened_ml_extensions
             .iter()
             .map(|x| {
-                x.evaluate(point).unwrap() // safe unwrap here since we have
-                                           // already checked that num_var
-                                           // matches
+                x.fix_variables(point)[0] // safe unwrap here since we have
+                                          // already checked that num_var
+                                          // matches
             })
             .collect();
 

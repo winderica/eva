@@ -18,6 +18,7 @@ use crate::utils::mle::matrix_to_mle;
 use crate::utils::mle::vec_to_mle;
 use crate::utils::virtual_polynomial::VirtualPolynomial;
 use crate::Error;
+use crate::MSM;
 
 /// Witness for the LCCCS & CCCS, containing the w vector, and the r_w used as randomness in the Pedersen commitment.
 #[derive(Debug, Clone)]
@@ -41,7 +42,10 @@ impl<C: CurveGroup> CCS<C> {
         rng: &mut R,
         pedersen_params: &PedersenParams<C>,
         z: &[C::ScalarField],
-    ) -> Result<(CCCS<C>, Witness<C::ScalarField>), Error> {
+    ) -> Result<(CCCS<C>, Witness<C::ScalarField>), Error>
+    where
+        C::Config: MSM<C>,
+    {
         let w: Vec<C::ScalarField> = z[(1 + self.l)..].to_vec();
         let r_w = C::ScalarField::rand(rng);
         let C = Pedersen::<C, true>::commit(pedersen_params, &w, &r_w)?;
@@ -102,7 +106,10 @@ impl<C: CurveGroup> CCS<C> {
     }
 }
 
-impl<C: CurveGroup> CCCS<C> {
+impl<C: CurveGroup> CCCS<C>
+where
+    C::Config: MSM<C>,
+{
     /// Perform the check of the CCCS instance described at section 4.1
     pub fn check_relation(
         &self,
@@ -139,7 +146,7 @@ pub mod tests {
     use ark_std::test_rng;
     use ark_std::UniformRand;
 
-    use ark_pallas::{Fr, Projective};
+    use ark_grumpkin::{Fr, Projective};
 
     /// Do some sanity checks on q(x). It's a multivariable polynomial and it should evaluate to zero inside the
     /// hypercube, but to not-zero outside the hypercube.

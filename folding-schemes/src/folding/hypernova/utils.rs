@@ -2,6 +2,7 @@ use ark_ec::CurveGroup;
 use ark_ff::{Field, PrimeField};
 use ark_poly::DenseMultilinearExtension;
 use ark_poly::MultilinearExtension;
+use ark_poly::Polynomial;
 use ark_std::{One, Zero};
 use std::ops::Add;
 
@@ -34,7 +35,7 @@ pub fn compute_all_sum_Mz_evals<F: PrimeField>(
     let mut v = Vec::with_capacity(M_x_y_mle.len());
     for M_i in M_x_y_mle {
         let sum_Mz = compute_sum_Mz(M_i, &z_y_mle, s_prime);
-        let v_i = sum_Mz.evaluate(r).unwrap();
+        let v_i = sum_Mz.fix_variables(r)[0];
         v.push(v_i);
     }
     v
@@ -192,7 +193,7 @@ pub fn compute_g<C: CurveGroup>(
 pub mod tests {
     use super::*;
 
-    use ark_pallas::{Fr, Projective};
+    use ark_grumpkin::{Fr, Projective};
     use ark_std::test_rng;
     use ark_std::One;
     use ark_std::UniformRand;

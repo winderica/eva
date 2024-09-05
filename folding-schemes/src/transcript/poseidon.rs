@@ -3,7 +3,7 @@ use ark_crypto_primitives::sponge::{
     poseidon::{constraints::PoseidonSpongeVar, PoseidonConfig, PoseidonSponge},
     Absorb, CryptographicSponge,
 };
-use ark_ec::{AffineRepr, CurveGroup, Group};
+use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
 use ark_ff::{BigInteger, Field, PrimeField};
 use ark_r1cs_std::{boolean::Boolean, fields::fp::FpVar};
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
@@ -17,14 +17,14 @@ use super::TranscriptVar;
 /// PoseidonTranscript implements the Transcript trait using the Poseidon hash
 pub struct PoseidonTranscript<C: CurveGroup>
 where
-    <C as Group>::ScalarField: Absorb,
+    C::ScalarField: Absorb,
 {
     sponge: PoseidonSponge<C::ScalarField>,
 }
 
 impl<C: CurveGroup> Transcript<C> for PoseidonTranscript<C>
 where
-    <C as Group>::ScalarField: Absorb,
+    C::ScalarField: Absorb,
 {
     type TranscriptConfig = PoseidonConfig<C::ScalarField>;
 
@@ -61,7 +61,7 @@ where
 // over bytes in order to have a logic that can be reproduced in-circuit.
 fn prepare_point<C: CurveGroup>(p: &C) -> Result<Vec<C::ScalarField>, Error> {
     let affine = p.into_affine();
-    let zero_point = (&C::BaseField::zero(), &C::BaseField::zero());
+    let zero_point = (C::BaseField::zero(), C::BaseField::zero());
     let xy = affine.xy().unwrap_or(zero_point);
 
     let x_bi =

@@ -1,27 +1,29 @@
 /// This file implements the onchain (Ethereum's EVM) decider.
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::{CurveGroup, Group};
+use ark_ec::CurveGroup;
 use ark_ff::PrimeField;
-use ark_r1cs_std::{groups::GroupOpsBounds, prelude::CurveVar, ToConstraintFieldGadget};
+use ark_r1cs_std::{convert::ToConstraintFieldGadget, groups::GroupOpsBounds, prelude::CurveVar};
 use ark_snark::SNARK;
 use ark_std::rand::{CryptoRng, RngCore};
 use ark_std::Zero;
 use core::marker::PhantomData;
 
 pub use super::decider_eth_circuit::{DeciderEthCircuit, KZGChallengesGadget};
-use super::{circuits::CF2, nifs::NIFS, CommittedInstance, Nova};
+use super::{circuits::CF2, nifs::NIFS, Nova};
+use super::{CurrentInstance, RunningInstance};
 use crate::commitment::{
     kzg::Proof as KZGProof, pedersen::Params as PedersenParams, CommitmentScheme,
 };
 use crate::folding::circuits::nonnative::affine::NonNativeAffineVar;
 use crate::frontend::FCircuit;
-use crate::Error;
 use crate::{Decider as DeciderTrait, FoldingScheme};
+use crate::{Error, MSM};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct Proof<C1, CS1, S>
 where
     C1: CurveGroup,
+    C1::Config: MSM<C1>,
     CS1: CommitmentScheme<C1, ProverChallenge = C1::ScalarField, Challenge = C1::ScalarField>,
     S: SNARK<C1::ScalarField>,
 {
@@ -54,7 +56,9 @@ impl<C1, GC1, C2, GC2, FC, CS1, CS2, S, FS> DeciderTrait<C1, C2, FC, FS>
     for Decider<C1, GC1, C2, GC2, FC, CS1, CS2, S, FS>
 where
     C1: CurveGroup,
+    C1::Config: MSM<C1>,
     C2: CurveGroup,
+    C2::Config: MSM<C2>,
     GC1: CurveVar<C1, CF2<C1>> + ToConstraintFieldGadget<CF2<C1>>,
     GC2: CurveVar<C2, CF2<C2>> + ToConstraintFieldGadget<CF2<C2>>,
     FC: FCircuit<C1::ScalarField>,
@@ -70,8 +74,8 @@ where
     FS: FoldingScheme<C1, C2, FC>,
     <C1 as CurveGroup>::BaseField: PrimeField,
     <C2 as CurveGroup>::BaseField: PrimeField,
-    <C1 as Group>::ScalarField: Absorb,
-    <C2 as Group>::ScalarField: Absorb,
+    C1::ScalarField: Absorb,
+    C2::ScalarField: Absorb,
     C1: CurveGroup<BaseField = C2::ScalarField, ScalarField = C2::BaseField>,
     for<'b> &'b GC2: GroupOpsBounds<'b, C2, GC2>,
     // constrain FS into Nova, since this is a Decider specifically for Nova
@@ -82,7 +86,8 @@ where
     type VerifierParam = (S::VerifyingKey, CS1::VerifierParams);
     type PublicInput = Vec<C1::ScalarField>;
     type CommittedInstanceWithWitness = ();
-    type CommittedInstance = CommittedInstance<C1>;
+    type RunningInstance = RunningInstance<C1>;
+    type CurrentInstance = CurrentInstance<C1>;
 
     fn prove(
         pp: Self::ProverParam,
@@ -141,8 +146,8 @@ where
         i: C1::ScalarField,
         z_0: Vec<C1::ScalarField>,
         z_i: Vec<C1::ScalarField>,
-        running_instance: &Self::CommittedInstance,
-        incoming_instance: &Self::CommittedInstance,
+        running_instance: &Self::RunningInstance,
+        incoming_instance: &Self::CurrentInstance,
         proof: Self::Proof,
     ) -> Result<bool, Error> {
         let (snark_vk, cs_vk): (S::VerifyingKey, CS1::VerifierParams) = vp;
