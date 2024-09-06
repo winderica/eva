@@ -12,10 +12,13 @@ use ark_std::{fmt::Debug, rand::RngCore, Zero};
 use commitment::CommitmentScheme;
 use folding::nova::circuits::CF2;
 use folding::nova::decider_pedersen::DeciderEthCircuit;
-use icicle_cuda_runtime::memory::DeviceVec;
+use icicle_core::traits::ArkConvertible;
+use icicle_cuda_runtime::device_context::{DeviceContext, DEFAULT_DEVICE_ID};
+use icicle_cuda_runtime::memory::{DeviceSlice, DeviceVec, HostOrDeviceSlice, HostSlice};
+use icicle_cuda_runtime::stream::CudaStream;
 use rayon::prelude::*;
 use thiserror::Error;
-use utils::vec::{CSRSparseMatrix, CudaSparseMatrix};
+use utils::vec::CSRSparseMatrix;
 
 use crate::frontend::FCircuit;
 
@@ -38,8 +41,8 @@ pub enum Error {
     PolyCommitError(#[from] ark_poly_commit::Error),
     #[error("crate::utils::espresso::virtual_polynomial::ArithErrors")]
     ArithError(#[from] utils::espresso::virtual_polynomial::ArithErrors),
-    #[error(transparent)]
-    ProtoGalaxy(folding::protogalaxy::ProtoGalaxyError),
+    // #[error(transparent)]
+    // ProtoGalaxy(folding::protogalaxy::ProtoGalaxyError),
     #[error("std::io::Error")]
     IOError(#[from] std::io::Error),
     #[error("{0}")]
@@ -108,7 +111,7 @@ pub enum Error {
 /// - C2 is the auxiliary curve, which we use for the commitments, whose BaseField (for point
 /// coordinates) are in the C1::ScalarField.
 /// In other words, C1.Fq == C2.Fr, and C1.Fr == C2.Fq.
-pub trait FoldingScheme<C1: CurveGroup, C2: CurveGroup, FC>: Clone
+pub trait FoldingScheme<C1: CurveGroup, C2: CurveGroup, FC>: Sized
 where
     C1: CurveGroup<BaseField = C2::ScalarField, ScalarField = C2::BaseField>,
     C2::BaseField: PrimeField,
@@ -207,35 +210,68 @@ pub trait MVM
 where
     Self: PrimeField,
 {
-    fn prepare_matrix(csr: &CSRSparseMatrix<Self>) -> CudaSparseMatrix<Self>;
+    fn prepare_matrix(csr: &CSRSparseMatrix<Self>) -> HybridMatrix;
 
     fn compute_t(
-        a: &CudaSparseMatrix<Self>,
-        b: &CudaSparseMatrix<Self>,
-        c: &CudaSparseMatrix<Self>,
-        z1: &[Self],
-        z2: &[Self],
-    ) -> Vec<Self>;
+        stream: Option<&CudaStream>,
+        a: &HybridMatrix,
+        b: &HybridMatrix,
+        c: &HybridMatrix,
+        z1_u: &[Self],
+        z1_x: &[Self],
+        z1_wq: &[Self],
+        z2_u: &[Self],
+        z2_x: &[Self],
+        z2_wq: &[Self],
+        e: &DeviceVec<Self>,
+        t: &mut DeviceVec<Self>,
+    );
+
+    fn alloc_vec(len: usize) -> DeviceVec<Self> {
+        let mut ptr = DeviceVec::cuda_malloc(len).unwrap();
+        let zeros = vec![Self::zero(); len];
+        ptr.copy_from_host(HostSlice::from_slice(zeros.cast()))
+            .unwrap();
+        ptr
+    }
+
+    fn update_e(stream: Option<&CudaStream>, e: &mut DeviceVec<Self>, t: &DeviceVec<Self>, r: Self);
+
+    fn retrieve_e(e: &DeviceVec<Self>) -> Vec<Self>;
 }
 
 pub trait MSM<C: CurveGroup> {
     type T;
+    type R;
 
     fn precompute(generators: &[C::Affine]) -> icicle_cuda_runtime::memory::DeviceVec<Self::T>;
 
     fn var_msm(points: &[C::Affine], scalars: &[C::ScalarField], offset: usize) -> C;
 
     fn var_msm_precomputed(
+        stream: Option<&CudaStream>,
         points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
         scalars: &[C::ScalarField],
         offset: usize,
-    ) -> C;
+        bitsize: Option<usize>,
+    ) -> DeviceVec<Self::R>;
+
+    fn var_msm_device_precomputed(
+        stream: Option<&CudaStream>,
+        points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
+        scalars: &DeviceVec<C::ScalarField>,
+        offset: usize,
+    ) -> DeviceVec<Self::R>;
+
+    fn retrieve_msm_result(stream: Option<&CudaStream>, result: &DeviceVec<Self::R>) -> C;
 }
 
 const PRECOMPUTE_FACTOR: usize = 4;
+const C: i32 = 4;
 
 impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
     type T = icicle_bn254::curve::G1Affine;
+    type R = icicle_bn254::curve::G1Projective;
 
     fn precompute(
         generators: &[ark_bn254::G1Affine],
@@ -243,7 +279,6 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
         use icicle_core::msm::{self, MSMConfig};
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
-            device_context::{DeviceContext, DEFAULT_DEVICE_ID},
             memory::{DeviceVec, HostSlice},
             stream::CudaStream,
         };
@@ -255,7 +290,7 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
         // cfg.start = offset as i32;
         cfg.ctx.stream = &stream;
         cfg.is_async = true;
-        cfg.c = max(log2(generators.len()) as i32 - 4, 1);
+        cfg.c = max(log2(generators.len()) as i32 - C, 1);
 
         msm::precompute_points(
             HostSlice::from_slice(
@@ -284,7 +319,7 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
         use icicle_core::msm::{self, MSMConfig};
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
-            memory::{DeviceSlice, DeviceVec, HostSlice},
+            memory::{DeviceVec, HostSlice},
             stream::CudaStream,
         };
         let stream = CudaStream::create().expect("Failed to create CUDA stream");
@@ -319,28 +354,31 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
     }
 
     fn var_msm_precomputed(
+        stream: Option<&CudaStream>,
         points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
         scalars: &[ark_bn254::Fr],
         offset: usize,
-    ) -> ark_bn254::G1Projective {
+        bitsize: Option<usize>,
+    ) -> DeviceVec<Self::R> {
         use icicle_core::msm::{self, MSMConfig};
         use icicle_core::traits::ArkConvertible;
-        use icicle_cuda_runtime::{
-            memory::{DeviceVec, HostOrDeviceSlice, HostSlice},
-            stream::CudaStream,
-        };
+        use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice, HostSlice};
         let timer = start_timer!(|| "Start MSM over BN254");
-        let stream = CudaStream::create().expect("Failed to create CUDA stream");
+        // let stream = CudaStream::create().expect("Failed to create CUDA stream");
         let mut cfg = MSMConfig::default();
         cfg.are_scalars_montgomery_form = true;
         cfg.precompute_factor = PRECOMPUTE_FACTOR as i32;
         // cfg.start = offset as i32;
-        cfg.ctx.stream = &stream;
-        cfg.is_async = true;
-        cfg.c = max(log2(points.len() / PRECOMPUTE_FACTOR) as i32 - 4, 1);
+        if let Some(stream) = stream {
+            cfg.ctx.stream = stream;
+            cfg.is_async = true;
+        }
+        if let Some(bitsize) = bitsize {
+            cfg.bitsize = bitsize as i32;
+        }
+        cfg.c = max(log2(points.len() / PRECOMPUTE_FACTOR) as i32 - C, 1);
 
-        let mut msm_results =
-            DeviceVec::<icicle_bn254::curve::G1Projective>::cuda_malloc(1).unwrap();
+        let mut msm_results = DeviceVec::<Self::R>::cuda_malloc(1).unwrap();
         msm::msm(
             HostSlice::from_slice(scalars.cast()),
             points,
@@ -350,16 +388,58 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
         .unwrap();
         end_timer!(timer);
 
-        let timer = start_timer!(|| "Synchronize");
-        stream.synchronize().unwrap();
+        msm_results
+    }
+
+    fn var_msm_device_precomputed(
+        stream: Option<&CudaStream>,
+        points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
+        scalars: &DeviceVec<ark_bn254::Fr>,
+        offset: usize,
+    ) -> DeviceVec<Self::R> {
+        use icicle_core::msm::{self, MSMConfig};
+        use icicle_core::traits::ArkConvertible;
+        use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice};
+        let timer = start_timer!(|| "Start MSM over BN254");
+        // let stream = CudaStream::create().expect("Failed to create CUDA stream");
+        let mut cfg = MSMConfig::default();
+        cfg.are_scalars_montgomery_form = false;
+        cfg.precompute_factor = PRECOMPUTE_FACTOR as i32;
+        // cfg.start = offset as i32;
+        if let Some(stream) = stream {
+            cfg.ctx.stream = stream;
+            cfg.is_async = true;
+        }
+        cfg.c = max(log2(points.len() / PRECOMPUTE_FACTOR) as i32 - C, 1);
+
+        let mut msm_results = DeviceVec::<Self::R>::cuda_malloc(1).unwrap();
+        msm::msm(
+            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&scalars[..]) },
+            points,
+            &cfg,
+            &mut msm_results[..],
+        )
+        .unwrap();
         end_timer!(timer);
 
+        msm_results
+    }
+
+    fn retrieve_msm_result(
+        stream: Option<&CudaStream>,
+        msm_results: &DeviceVec<Self::R>,
+    ) -> ark_bn254::G1Projective {
+        if let Some(stream) = stream {
+            let timer = start_timer!(|| "Synchronize");
+            stream.synchronize().unwrap();
+            end_timer!(timer);
+        }
+
         let timer = start_timer!(|| "Get result from GPU");
-        let mut msm_host_result = vec![icicle_bn254::curve::G1Projective::zero(); 1];
+        let mut msm_host_result = vec![Self::R::zero(); 1];
         msm_results
             .copy_to_host(HostSlice::from_mut_slice(&mut msm_host_result[..]))
             .unwrap();
-        stream.destroy().unwrap();
         let result = msm_host_result[0].to_ark();
         end_timer!(timer);
 
@@ -401,7 +481,7 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
 }
 
 impl MVM for ark_bn254::Fr {
-    fn prepare_matrix(csr: &CSRSparseMatrix<ark_bn254::Fr>) -> CudaSparseMatrix<ark_bn254::Fr> {
+    fn prepare_matrix(csr: &CSRSparseMatrix<ark_bn254::Fr>) -> HybridMatrix {
         use icicle_core::ntt::FieldImpl;
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
@@ -409,11 +489,7 @@ impl MVM for ark_bn254::Fr {
             memory::HostSlice,
         };
 
-        let mut data = icicle_cuda_runtime::memory::DeviceVec::cuda_malloc(csr.data.len()).unwrap();
-        let mut row_ptr =
-            icicle_cuda_runtime::memory::DeviceVec::cuda_malloc(csr.row_ptr.len()).unwrap();
-        let mut col_idx =
-            icicle_cuda_runtime::memory::DeviceVec::cuda_malloc(csr.col_idx.len()).unwrap();
+        let mut result = HybridMatrix::default();
 
         let ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
 
@@ -421,26 +497,29 @@ impl MVM for ark_bn254::Fr {
             HostSlice::from_slice(csr.data.cast::<icicle_bn254::curve::ScalarField>()),
             HostSlice::from_slice(&csr.row_ptr),
             HostSlice::from_slice(&csr.col_idx),
+            HostSlice::from_slice(&csr.sparse_to_original),
+            HostSlice::from_slice(&csr.dense_to_original),
             &ctx,
-            &mut data,
-            &mut row_ptr,
-            &mut col_idx,
+            &mut result,
         )
         .unwrap();
-        CudaSparseMatrix {
-            data: unsafe { std::mem::transmute(data) },
-            row_ptr,
-            col_idx,
-        }
+        result
     }
 
     fn compute_t(
-        a: &CudaSparseMatrix<ark_bn254::Fr>,
-        b: &CudaSparseMatrix<ark_bn254::Fr>,
-        c: &CudaSparseMatrix<ark_bn254::Fr>,
-        z1: &[ark_bn254::Fr],
-        z2: &[ark_bn254::Fr],
-    ) -> Vec<ark_bn254::Fr> {
+        stream: Option<&CudaStream>,
+        a: &HybridMatrix,
+        b: &HybridMatrix,
+        c: &HybridMatrix,
+        z1_u: &[Self],
+        z1_x: &[Self],
+        z1_wq: &[Self],
+        z2_u: &[Self],
+        z2_x: &[Self],
+        z2_wq: &[Self],
+        e: &DeviceVec<ark_bn254::Fr>,
+        t: &mut DeviceVec<ark_bn254::Fr>,
+    ) {
         use icicle_core::ntt::FieldImpl;
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
@@ -448,22 +527,57 @@ impl MVM for ark_bn254::Fr {
             memory::{DeviceSlice, HostOrDeviceSlice, HostSlice},
         };
 
-        let mut result = vec![ark_bn254::Fr::zero(); a.row_ptr.len() - 1];
+        let mut ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
 
-        let ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
+        if let Some(stream) = stream {
+            ctx.stream = stream;
+        }
 
         icicle_core::vec_ops::compute_t(
-            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&a.data[..]) },
-            &a.row_ptr[..],
-            &a.col_idx[..],
-            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&b.data[..]) },
-            &b.row_ptr[..],
-            &b.col_idx[..],
-            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&c.data[..]) },
-            &c.row_ptr[..],
-            &c.col_idx[..],
-            HostSlice::from_slice(z1.cast::<icicle_bn254::curve::ScalarField>()),
-            HostSlice::from_slice(z2.cast::<icicle_bn254::curve::ScalarField>()),
+            &a, &b, &c,
+            HostSlice::from_slice(z1_u.cast::<icicle_bn254::curve::ScalarField>()),
+            HostSlice::from_slice(z1_x.cast::<icicle_bn254::curve::ScalarField>()),
+            HostSlice::from_slice(z1_wq.cast::<icicle_bn254::curve::ScalarField>()),
+            HostSlice::from_slice(z2_u.cast::<icicle_bn254::curve::ScalarField>()),
+            HostSlice::from_slice(z2_x.cast::<icicle_bn254::curve::ScalarField>()),
+            HostSlice::from_slice(z2_wq.cast::<icicle_bn254::curve::ScalarField>()),
+            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&e[..]) },
+            &ctx,
+            unsafe { std::mem::transmute::<_, &mut DeviceSlice<_>>(&mut t[..]) },
+        )
+        .unwrap();
+    }
+
+    fn update_e(
+        stream: Option<&CudaStream>,
+        e: &mut DeviceVec<Self>,
+        t: &DeviceVec<Self>,
+        r: Self,
+    ) {
+        let mut ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
+
+        if let Some(stream) = stream {
+            ctx.stream = stream;
+        }
+
+        icicle_core::vec_ops::update_e(
+            unsafe { std::mem::transmute::<_, &mut DeviceSlice<_>>(&mut e[..]) },
+            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&t[..]) },
+            HostSlice::from_slice(vec![r].cast::<icicle_bn254::curve::ScalarField>()),
+            &ctx,
+        )
+        .unwrap();
+    }
+
+    fn retrieve_e(e: &DeviceVec<Self>) -> Vec<Self> {
+        let ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
+
+        let mut result = vec![Self::zero(); e.len()];
+
+        icicle_core::vec_ops::return_e(
+            unsafe {
+                std::mem::transmute::<_, &DeviceSlice<icicle_bn254::curve::ScalarField>>(&e[..])
+            },
             &ctx,
             HostSlice::from_mut_slice(result.cast_mut()),
         )
@@ -475,6 +589,7 @@ impl MVM for ark_bn254::Fr {
 
 impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
     type T = icicle_grumpkin::curve::G1Affine;
+    type R = icicle_grumpkin::curve::G1Projective;
 
     fn precompute(
         generators: &[ark_grumpkin::Affine],
@@ -482,7 +597,6 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
         use icicle_core::msm::{self, MSMConfig};
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
-            device_context::{DeviceContext, DEFAULT_DEVICE_ID},
             memory::{DeviceVec, HostSlice},
             stream::CudaStream,
         };
@@ -558,28 +672,31 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
     }
 
     fn var_msm_precomputed(
+        stream: Option<&CudaStream>,
         points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
         scalars: &[ark_grumpkin::Fr],
         offset: usize,
-    ) -> ark_grumpkin::Projective {
+        bitsize: Option<usize>,
+    ) -> DeviceVec<Self::R> {
         use icicle_core::msm::{self, MSMConfig};
         use icicle_core::traits::ArkConvertible;
-        use icicle_cuda_runtime::{
-            memory::{DeviceVec, HostOrDeviceSlice, HostSlice},
-            stream::CudaStream,
-        };
+        use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice, HostSlice};
         let timer = start_timer!(|| "Start MSM over Grumpkin");
-        let stream = CudaStream::create().expect("Failed to create CUDA stream");
+        // let stream = CudaStream::create().expect("Failed to create CUDA stream");
         let mut cfg = MSMConfig::default();
         cfg.are_scalars_montgomery_form = true;
         cfg.precompute_factor = PRECOMPUTE_FACTOR as i32;
         // cfg.start = offset as i32;
-        cfg.ctx.stream = &stream;
-        cfg.is_async = true;
-        cfg.c = max(log2(points.len() / PRECOMPUTE_FACTOR) as i32 - 4, 1);
+        if let Some(stream) = stream {
+            cfg.ctx.stream = stream;
+            cfg.is_async = true;
+        }
+        if let Some(bitsize) = bitsize {
+            cfg.bitsize = bitsize as i32;
+        }
+        cfg.c = max(log2(points.len() / PRECOMPUTE_FACTOR) as i32 - C, 1);
 
-        let mut msm_results =
-            DeviceVec::<icicle_grumpkin::curve::G1Projective>::cuda_malloc(1).unwrap();
+        let mut msm_results = DeviceVec::<Self::R>::cuda_malloc(1).unwrap();
         msm::msm(
             HostSlice::from_slice(scalars.cast()),
             points,
@@ -589,16 +706,58 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
         .unwrap();
         end_timer!(timer);
 
-        let timer = start_timer!(|| "Synchronize");
-        stream.synchronize().unwrap();
+        msm_results
+    }
+
+    fn var_msm_device_precomputed(
+        stream: Option<&CudaStream>,
+        points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
+        scalars: &DeviceVec<ark_grumpkin::Fr>,
+        offset: usize,
+    ) -> DeviceVec<Self::R> {
+        use icicle_core::msm::{self, MSMConfig};
+        use icicle_core::traits::ArkConvertible;
+        use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice};
+        let timer = start_timer!(|| "Start MSM over Grumpkin");
+        // let stream = CudaStream::create().expect("Failed to create CUDA stream");
+        let mut cfg = MSMConfig::default();
+        cfg.are_scalars_montgomery_form = false;
+        cfg.precompute_factor = PRECOMPUTE_FACTOR as i32;
+        // cfg.start = offset as i32;
+        if let Some(stream) = stream {
+            cfg.ctx.stream = stream;
+            cfg.is_async = true;
+        }
+        cfg.c = max(log2(points.len() / PRECOMPUTE_FACTOR) as i32 - C, 1);
+
+        let mut msm_results = DeviceVec::<Self::R>::cuda_malloc(1).unwrap();
+        msm::msm(
+            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&scalars[..]) },
+            points,
+            &cfg,
+            &mut msm_results[..],
+        )
+        .unwrap();
         end_timer!(timer);
 
+        msm_results
+    }
+
+    fn retrieve_msm_result(
+        stream: Option<&CudaStream>,
+        msm_results: &DeviceVec<Self::R>,
+    ) -> ark_grumpkin::Projective {
+        if let Some(stream) = stream {
+            let timer = start_timer!(|| "Synchronize");
+            stream.synchronize().unwrap();
+            end_timer!(timer);
+        }
+
         let timer = start_timer!(|| "Get result from GPU");
-        let mut msm_host_result = vec![icicle_grumpkin::curve::G1Projective::zero(); 1];
+        let mut msm_host_result = vec![Self::R::zero(); 1];
         msm_results
             .copy_to_host(HostSlice::from_mut_slice(&mut msm_host_result[..]))
             .unwrap();
-        stream.destroy().unwrap();
         let result = msm_host_result[0].to_ark();
         end_timer!(timer);
 
@@ -606,7 +765,7 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
     }
 
     // fn sparse_mvm(
-    //     csr: &CudaSparseMatrix<ark_grumpkin::Fr>,
+    //     csr: &HybridMatrix,
     //     z: &[ark_grumpkin::Fr],
     // ) -> Vec<ark_grumpkin::Fr> {
     //     use icicle_cuda_runtime::memory::HostSlice;
@@ -631,7 +790,7 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
 impl MVM for ark_grumpkin::Fr {
     fn prepare_matrix(
         csr: &CSRSparseMatrix<ark_grumpkin::Fr>,
-    ) -> CudaSparseMatrix<ark_grumpkin::Fr> {
+    ) -> HybridMatrix {
         use icicle_core::ntt::FieldImpl;
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
@@ -639,11 +798,7 @@ impl MVM for ark_grumpkin::Fr {
             memory::HostSlice,
         };
 
-        let mut data = icicle_cuda_runtime::memory::DeviceVec::cuda_malloc(csr.data.len()).unwrap();
-        let mut row_ptr =
-            icicle_cuda_runtime::memory::DeviceVec::cuda_malloc(csr.row_ptr.len()).unwrap();
-        let mut col_idx =
-            icicle_cuda_runtime::memory::DeviceVec::cuda_malloc(csr.col_idx.len()).unwrap();
+        let mut result = HybridMatrix::default();
 
         let ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
 
@@ -651,26 +806,29 @@ impl MVM for ark_grumpkin::Fr {
             HostSlice::from_slice(csr.data.cast::<icicle_grumpkin::curve::ScalarField>()),
             HostSlice::from_slice(&csr.row_ptr),
             HostSlice::from_slice(&csr.col_idx),
+            HostSlice::from_slice(&csr.sparse_to_original),
+            HostSlice::from_slice(&csr.dense_to_original),
             &ctx,
-            &mut data,
-            &mut row_ptr,
-            &mut col_idx,
+            &mut result,
         )
         .unwrap();
-        CudaSparseMatrix {
-            data: unsafe { std::mem::transmute(data) },
-            row_ptr,
-            col_idx,
-        }
+        result
     }
 
     fn compute_t(
-        a: &CudaSparseMatrix<ark_grumpkin::Fr>,
-        b: &CudaSparseMatrix<ark_grumpkin::Fr>,
-        c: &CudaSparseMatrix<ark_grumpkin::Fr>,
-        z1: &[ark_grumpkin::Fr],
-        z2: &[ark_grumpkin::Fr],
-    ) -> Vec<ark_grumpkin::Fr> {
+        stream: Option<&CudaStream>,
+        a: &HybridMatrix,
+        b: &HybridMatrix,
+        c: &HybridMatrix,
+        z1_u: &[Self],
+        z1_x: &[Self],
+        z1_wq: &[Self],
+        z2_u: &[Self],
+        z2_x: &[Self],
+        z2_wq: &[Self],
+        e: &DeviceVec<ark_grumpkin::Fr>,
+        t: &mut DeviceVec<ark_grumpkin::Fr>,
+    ) {
         use icicle_core::ntt::FieldImpl;
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
@@ -678,22 +836,57 @@ impl MVM for ark_grumpkin::Fr {
             memory::{DeviceSlice, HostOrDeviceSlice, HostSlice},
         };
 
-        let mut result = vec![ark_grumpkin::Fr::zero(); a.row_ptr.len() - 1];
+        let mut ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
 
-        let ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
+        if let Some(stream) = stream {
+            ctx.stream = stream;
+        }
 
         icicle_core::vec_ops::compute_t(
-            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&a.data[..]) },
-            &a.row_ptr[..],
-            &a.col_idx[..],
-            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&b.data[..]) },
-            &b.row_ptr[..],
-            &b.col_idx[..],
-            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&c.data[..]) },
-            &c.row_ptr[..],
-            &c.col_idx[..],
-            HostSlice::from_slice(z1.cast::<icicle_grumpkin::curve::ScalarField>()),
-            HostSlice::from_slice(z2.cast::<icicle_grumpkin::curve::ScalarField>()),
+            &a, &b, &c,
+            HostSlice::from_slice(z1_u.cast::<icicle_grumpkin::curve::ScalarField>()),
+            HostSlice::from_slice(z1_x.cast::<icicle_grumpkin::curve::ScalarField>()),
+            HostSlice::from_slice(z1_wq.cast::<icicle_grumpkin::curve::ScalarField>()),
+            HostSlice::from_slice(z2_u.cast::<icicle_grumpkin::curve::ScalarField>()),
+            HostSlice::from_slice(z2_x.cast::<icicle_grumpkin::curve::ScalarField>()),
+            HostSlice::from_slice(z2_wq.cast::<icicle_grumpkin::curve::ScalarField>()),
+            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&e[..]) },
+            &ctx,
+            unsafe { std::mem::transmute::<_, &mut DeviceSlice<_>>(&mut t[..]) },
+        )
+        .unwrap();
+    }
+
+    fn update_e(
+        stream: Option<&CudaStream>,
+        e: &mut DeviceVec<ark_grumpkin::Fr>,
+        t: &DeviceVec<ark_grumpkin::Fr>,
+        r: ark_grumpkin::Fr,
+    ) {
+        let mut ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
+
+        if let Some(stream) = stream {
+            ctx.stream = stream;
+        }
+
+        icicle_core::vec_ops::update_e(
+            unsafe { std::mem::transmute::<_, &mut DeviceSlice<_>>(&mut e[..]) },
+            unsafe { std::mem::transmute::<_, &DeviceSlice<_>>(&t[..]) },
+            HostSlice::from_slice(vec![r].cast::<icicle_grumpkin::curve::ScalarField>()),
+            &ctx,
+        )
+        .unwrap();
+    }
+
+    fn retrieve_e(e: &DeviceVec<Self>) -> Vec<Self> {
+        let ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
+
+        let mut result = vec![Self::zero(); e.len()];
+
+        icicle_core::vec_ops::return_e(
+            unsafe {
+                std::mem::transmute::<_, &DeviceSlice<icicle_grumpkin::curve::ScalarField>>(&e[..])
+            },
             &ctx,
             HostSlice::from_mut_slice(result.cast_mut()),
         )
@@ -703,6 +896,7 @@ impl MVM for ark_grumpkin::Fr {
     }
 }
 
+use icicle_core::vec_ops::HybridMatrix;
 use std::cmp::max;
 use std::mem::size_of;
 use std::slice::{from_raw_parts, from_raw_parts_mut};
@@ -738,31 +932,26 @@ impl<From> CastSlice<From> for [From] {}
 mod tests {
     use std::time::Instant;
 
-    use ark_crypto_primitives::sponge::Absorb;
     use ark_ec::VariableBaseMSM;
-    use ark_ff::{BigInteger, FftField, Field, MontConfig, UniformRand};
+    use ark_ff::{FftField, Field, UniformRand};
     use ark_r1cs_std::alloc::AllocVar;
     use ark_r1cs_std::fields::fp::FpVar;
     use ark_r1cs_std::fields::FieldVar;
     use ark_relations::r1cs::ConstraintSynthesizer;
-    use ark_serialize::CanonicalDeserialize;
     use ark_std::test_rng;
     use commitment::pedersen::Pedersen;
     use folding::nova::get_r1cs_from_cs;
     use folding::nova::nifs::NIFS;
-    use icicle_bn254::curve::{CurveCfg, G1Projective, ScalarCfg};
     use icicle_core::traits::ArkConvertible;
     use icicle_core::{
         curve::Curve,
-        msm::{self, MSMConfig},
-        traits::GenerateRandom,
+        msm::{self, MSMConfig}
+        ,
     };
-    use icicle_cuda_runtime::{
-        memory::{DeviceSlice, HostOrDeviceSlice, HostSlice},
-        stream::CudaStream,
-    };
-    use rand::{thread_rng, Rng};
-    use utils::vec::{mat_vec_mul_sparse, SparseMatrix};
+    use icicle_cuda_runtime::memory::{HostOrDeviceSlice, HostSlice};
+    use rand::thread_rng;
+
+    use crate::utils::vec::{vec_add, vec_sub};
 
     use super::*;
     #[test]
@@ -785,8 +974,14 @@ mod tests {
             }
             // scalars.resize(n, ark_bn254::Fr::zero());
             let now = Instant::now();
-            let res2 =
-                ark_bn254::g1::Config::var_msm_precomputed(&points_precomputed, &scalars[..], 0);
+            let res2 = ark_bn254::g1::Config::var_msm_precomputed(
+                None,
+                &points_precomputed,
+                &scalars[..],
+                0,
+                None,
+            );
+            let res2 = ark_bn254::g1::Config::retrieve_msm_result(None, &res2);
             println!("{}", res2);
             println!("{:?}", now.elapsed());
             let now = Instant::now();
@@ -901,6 +1096,9 @@ mod tests {
         let z2 = (0..r1cs.A.n_cols)
             .map(|_| ark_bn254::Fr::rand(rng))
             .collect::<Vec<_>>();
+        let e1 = r1cs.eval_relation(&z1).unwrap();
+        let e2 = r1cs.eval_relation(&z2).unwrap();
+        let e = vec_add(&e1, &e2).unwrap();
         let now = Instant::now();
         let expected =
             NIFS::<ark_bn254::G1Projective, Pedersen<ark_bn254::G1Projective, false>>::compute_T(
@@ -909,9 +1107,26 @@ mod tests {
             .unwrap();
         println!("{:?}", now.elapsed());
 
+        let mut t = ark_bn254::Fr::alloc_vec(r1cs.A.n_rows);
+        let tmp_e = ark_bn254::Fr::alloc_vec(r1cs.A.n_rows);
         let now = Instant::now();
-        let result = ark_bn254::Fr::compute_t(&r1cs.A.cuda, &r1cs.B.cuda, &r1cs.C.cuda, &z1, &z2);
+
+        ark_bn254::Fr::compute_t(
+            None,
+            &r1cs.A.cuda,
+            &r1cs.B.cuda,
+            &r1cs.C.cuda,
+            &z1[..1],
+            &z1[1..1 + r1cs.l],
+            &z1[1 + r1cs.l..],
+            &z2[..1],
+            &z2[1..1 + r1cs.l],
+            &z2[1 + r1cs.l..],
+            &tmp_e,
+            &mut t,
+        );
         println!("{:?}", now.elapsed());
+        let result = vec_sub(&ark_bn254::Fr::retrieve_e(&t), &e).unwrap();
 
         assert_eq!(result, expected);
     }

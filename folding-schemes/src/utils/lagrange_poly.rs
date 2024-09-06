@@ -47,7 +47,6 @@ pub fn compute_lagrange_interpolated_poly<F: PrimeField>(p_i: &[F]) -> DensePoly
 
 #[cfg(test)]
 mod tests {
-
     use std::error::Error;
 
     use crate::utils::espresso::sum_check::verifier::interpolate_uni_poly;

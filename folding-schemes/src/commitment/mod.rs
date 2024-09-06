@@ -1,12 +1,12 @@
 use ark_ec::CurveGroup;
 use ark_std::fmt::Debug;
 use ark_std::rand::RngCore;
+use icicle_cuda_runtime::memory::DeviceVec;
+use icicle_cuda_runtime::stream::CudaStream;
 
 use crate::transcript::Transcript;
 use crate::{Error, MSM};
 
-pub mod ipa;
-pub mod kzg;
 pub mod pedersen;
 
 /// CommitmentScheme defines the vector commitment scheme trait. Where `H` indicates if to use the
@@ -27,8 +27,16 @@ where
     ) -> Result<(Self::ProverParams, Self::VerifierParams), Error>;
 
     fn commit(
+        stream: Option<&CudaStream>,
         params: &Self::ProverParams,
         v: &[C::ScalarField],
+        blind: &C::ScalarField,
+    ) -> Result<C, Error>;
+
+    fn commit_device(
+        stream: Option<&CudaStream>,
+        params: &Self::ProverParams,
+        v: &DeviceVec<C::ScalarField>,
         blind: &C::ScalarField,
     ) -> Result<C, Error>;
 
@@ -71,14 +79,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ark_bn254::{Bn254, Fr, G1Projective as G1};
+    use ark_bn254::{Fr, G1Projective as G1};
     use ark_crypto_primitives::sponge::{poseidon::PoseidonConfig, Absorb};
-    use ark_poly_commit::kzg10::VerifierKey;
     use ark_std::Zero;
     use ark_std::{test_rng, UniformRand};
 
-    use super::ipa::IPA;
-    use super::kzg::{ProverKey, KZG};
     use super::pedersen::Pedersen;
     use crate::transcript::{
         poseidon::{poseidon_test_config, PoseidonTranscript},
@@ -99,8 +104,8 @@ mod tests {
 
         // setup params for Pedersen & KZG
         let (pedersen_params, _) = Pedersen::<G1>::setup(&mut rng, n).unwrap();
-        let (kzg_pk, kzg_vk): (ProverKey<G1>, VerifierKey<Bn254>) =
-            KZG::<Bn254>::setup(rng, n).unwrap();
+        // let (kzg_pk, kzg_vk): (ProverKey<G1>, VerifierKey<Bn254>) =
+        //     KZG::<Bn254>::setup(rng, n).unwrap();
 
         // test with Pedersen
         test_homomorphic_property_using_Commitment_trait_opt::<G1, Pedersen<G1>>(
@@ -111,24 +116,24 @@ mod tests {
             &v_1,
             &v_2,
         );
-        // test with IPA
-        test_homomorphic_property_using_Commitment_trait_opt::<G1, IPA<G1>>(
-            &poseidon_config,
-            &pedersen_params,
-            &pedersen_params,
-            r,
-            &v_1,
-            &v_2,
-        );
-        // test with KZG
-        test_homomorphic_property_using_Commitment_trait_opt::<G1, KZG<Bn254>>(
-            &poseidon_config,
-            &kzg_pk,
-            &kzg_vk,
-            r,
-            &v_1,
-            &v_2,
-        );
+        // // test with IPA
+        // test_homomorphic_property_using_Commitment_trait_opt::<G1, IPA<G1>>(
+        //     &poseidon_config,
+        //     &pedersen_params,
+        //     &pedersen_params,
+        //     r,
+        //     &v_1,
+        //     &v_2,
+        // );
+        // // test with KZG
+        // test_homomorphic_property_using_Commitment_trait_opt::<G1, KZG<Bn254>>(
+        //     &poseidon_config,
+        //     &kzg_pk,
+        //     &kzg_vk,
+        //     r,
+        //     &v_1,
+        //     &v_2,
+        // );
     }
 
     fn test_homomorphic_property_using_Commitment_trait_opt<
@@ -146,8 +151,8 @@ mod tests {
         C::Config: MSM<C>,
     {
         // compute the commitment of the two vectors using the given CommitmentScheme
-        let cm_1 = CS::commit(prover_params, v_1, &C::ScalarField::zero()).unwrap();
-        let cm_2 = CS::commit(prover_params, v_2, &C::ScalarField::zero()).unwrap();
+        let cm_1 = CS::commit(None, prover_params, v_1, &C::ScalarField::zero()).unwrap();
+        let cm_2 = CS::commit(None, prover_params, v_2, &C::ScalarField::zero()).unwrap();
 
         // random linear combination of the commitments and their witnesses (vectors v_i)
         let cm_3 = cm_1 + cm_2.mul(r);

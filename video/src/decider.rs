@@ -1,13 +1,11 @@
-/// This file implements the onchain (Ethereum's EVM) decider.
-use ark_bn254::Bn254;
 use ark_crypto_primitives::crh::poseidon::constraints::CRHGadget;
 use ark_crypto_primitives::crh::CRHSchemeGadget;
 use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::pairing::Pairing;
-use ark_ec::{AffineRepr, CurveGroup};
+use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{BigInteger, PrimeField, ToConstraintField};
 use ark_r1cs_std::{
-    convert::ToConstraintFieldGadget, groups::GroupOpsBounds, prelude::CurveVar, R1CSVar as _,
+    convert::ToConstraintFieldGadget, prelude::CurveVar, R1CSVar as _,
 };
 use ark_serialize::{CanonicalSerialize, Compress};
 use ark_snark::SNARK;
@@ -28,32 +26,29 @@ use folding_schemes::folding::{
     },
 };
 use folding_schemes::frontend::FCircuit;
-use folding_schemes::{Decider as DeciderTrait, FoldingScheme, MVM};
+use folding_schemes::{Decider as DeciderTrait, MVM};
 use folding_schemes::{Error, MSM};
 
 /// This file implements the onchain (Ethereum's EVM) decider circuit. For non-ethereum use cases,
 /// other more efficient approaches can be used.
 use ark_crypto_primitives::crh::poseidon::constraints::CRHParametersVar;
 use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
-use ark_poly::Polynomial;
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
     convert::ToBitsGadget,
     eq::EqGadget,
-    fields::{fp::FpVar, FieldVar},
-    poly::{domain::Radix2DomainVar, evaluations::univariate::EvaluationsVar},
+    fields::{fp::FpVar, FieldVar}
+    ,
 };
 
+
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
-use ark_std::log2;
 use core::borrow::Borrow;
 
 use folding_schemes::ccs::r1cs::R1CS;
 use folding_schemes::folding::circuits::nonnative::uint::LimbVar;
-use folding_schemes::folding::circuits::nonnative::{
-    affine::nonnative_affine_to_field_elements, uint::NonNativeUintVar,
-};
+use folding_schemes::folding::circuits::nonnative::uint::NonNativeUintVar;
 use folding_schemes::folding::nova::circuits::ChallengeGadget;
 use folding_schemes::folding::nova::circuits::NIFSGadget;
 use folding_schemes::folding::nova::{
@@ -61,13 +56,9 @@ use folding_schemes::folding::nova::{
     Witness,
 };
 use folding_schemes::transcript::{
-    poseidon::{PoseidonTranscript, PoseidonTranscriptVar},
     Transcript, TranscriptVar,
 };
-use folding_schemes::utils::{
-    gadgets::{MatrixGadget, SparseMatrixVar, VectorGadget},
-    vec::poly_from_vec,
-};
+use folding_schemes::utils::gadgets::{MatrixGadget, SparseMatrixVar, VectorGadget};
 
 use num_bigint::BigUint;
 
@@ -164,12 +155,12 @@ pub struct WitnessVar<C: CurveGroup> {
     pub rW: FpVar<C::ScalarField>,
 }
 
-impl<C> AllocVar<Witness<C>, CF1<C>> for WitnessVar<C>
+impl<C> AllocVar<(Vec<CF1<C>>, Witness<C>), CF1<C>> for WitnessVar<C>
 where
     C: CurveGroup,
     <C as ark_ec::CurveGroup>::BaseField: PrimeField,
 {
-    fn new_variable<T: Borrow<Witness<C>>>(
+    fn new_variable<T: Borrow<(Vec<CF1<C>>, Witness<C>)>>(
         cs: impl Into<Namespace<CF1<C>>>,
         f: impl FnOnce() -> Result<T, SynthesisError>,
         mode: AllocationMode,
@@ -177,20 +168,21 @@ where
         f().and_then(|val| {
             let cs = cs.into();
 
-            let E: Vec<FpVar<C::ScalarField>> =
-                Vec::new_variable(cs.clone(), || Ok(val.borrow().E.clone()), mode)?;
-            let rE =
-                FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(val.borrow().rE), mode)?;
+            let v = val.borrow();
+            let (e, w) = v;
 
-            let Q: Vec<FpVar<C::ScalarField>> =
-                Vec::new_variable(cs.clone(), || Ok(val.borrow().q().to_vec()), mode)?;
-            let rQ =
-                FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(val.borrow().rQ), mode)?;
+            let E: Vec<FpVar<C::ScalarField>> = Vec::new_variable(cs.clone(), || Ok(&e[..]), mode)?;
+            let rE = FpVar::<C::ScalarField>::new_variable(
+                cs.clone(),
+                || Ok(C::ScalarField::zero()),
+                mode,
+            )?;
 
-            let W: Vec<FpVar<C::ScalarField>> =
-                Vec::new_variable(cs.clone(), || Ok(val.borrow().w().to_vec()), mode)?;
-            let rW =
-                FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(val.borrow().rW), mode)?;
+            let Q: Vec<FpVar<C::ScalarField>> = Vec::new_variable(cs.clone(), || Ok(w.q()), mode)?;
+            let rQ = FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(w.rQ), mode)?;
+
+            let W: Vec<FpVar<C::ScalarField>> = Vec::new_variable(cs.clone(), || Ok(w.w()), mode)?;
+            let rW = FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(w.rW), mode)?;
 
             Ok(Self {
                 E,
@@ -214,12 +206,12 @@ pub struct CycleFoldWitnessVar<C: CurveGroup> {
     pub rW: NonNativeUintVar<CF2<C>>,
 }
 
-impl<C> AllocVar<Witness<C>, CF2<C>> for CycleFoldWitnessVar<C>
+impl<C> AllocVar<(Vec<CF1<C>>, Witness<C>), CF2<C>> for CycleFoldWitnessVar<C>
 where
     C: CurveGroup,
     <C as ark_ec::CurveGroup>::BaseField: PrimeField,
 {
-    fn new_variable<T: Borrow<Witness<C>>>(
+    fn new_variable<T: Borrow<(Vec<CF1<C>>, Witness<C>)>>(
         cs: impl Into<Namespace<CF2<C>>>,
         f: impl FnOnce() -> Result<T, SynthesisError>,
         mode: AllocationMode,
@@ -227,13 +219,16 @@ where
         f().and_then(|val| {
             let cs = cs.into();
 
-            let E = Vec::new_variable(cs.clone(), || Ok(val.borrow().E.clone()), mode)?;
-            let rE = NonNativeUintVar::new_variable(cs.clone(), || Ok(val.borrow().rE), mode)?;
+            let v = val.borrow();
+            let (e, w) = v;
 
-            assert!(val.borrow().q().is_empty());
+            let E = Vec::new_variable(cs.clone(), || Ok(&e[..]), mode)?;
+            let rE = NonNativeUintVar::new_variable(cs.clone(), || Ok(C::BaseField::zero()), mode)?;
 
-            let W = Vec::new_variable(cs.clone(), || Ok(val.borrow().QW.clone()), mode)?;
-            let rW = NonNativeUintVar::new_variable(cs.clone(), || Ok(val.borrow().rW), mode)?;
+            assert!(w.q().is_empty());
+
+            let W = Vec::new_variable(cs.clone(), || Ok(&w.QW[..]), mode)?;
+            let rW = NonNativeUintVar::new_variable(cs.clone(), || Ok(w.rW), mode)?;
 
             Ok(Self { E, rE, W, rW })
         })
@@ -273,6 +268,8 @@ where
     /// CycleFold running instance
     pub cf_U_i: Option<CycleFoldCommittedInstance<C2>>,
     pub cf_W_i: Option<Witness<C2>>,
+    pub E: Option<Vec<C1::ScalarField>>,
+    pub cf_E: Option<Vec<C2::ScalarField>>,
 
     pub sigma: (C1::ScalarField, C2::ScalarField),
     pub vk: C2,
@@ -288,38 +285,52 @@ where
     GC1: CurveVar<C1, CF2<C1>> + ToConstraintFieldGadget<CF2<C1>>,
     GC2: CurveVar<C2, CF2<C2>> + ToConstraintFieldGadget<CF2<C2>>,
     C1::ScalarField: Absorb + MVM,
+    C2::ScalarField: Absorb + MVM,
     <C1 as CurveGroup>::BaseField: PrimeField,
 {
     pub fn from_nova<FC: FCircuit<C1::ScalarField>, CS1, CS2>(
-        nova: &Nova<C1, GC1, C2, GC2, FC, CS1, CS2>,
+        mut nova: Nova<C1, GC1, C2, GC2, FC, CS1, CS2>,
         (pp, vp): (ProverParams<C1, C2, CS1, CS2>, VerifierParams<C1, C2>),
         vk: C2,
         sigma: (C1::ScalarField, C2::ScalarField),
     ) -> Result<Self, Error>
     where
-        CS1: CommitmentScheme<C1>,
+        CS1: CommitmentScheme<C1, ProverParams = PedersenParams<C1>>,
         // enforce that the CS2 is Pedersen commitment scheme, since we're at Ethereum's EVM decider
         CS2: CommitmentScheme<C2, ProverParams = PedersenParams<C2>>,
     {
         // compute the U_{i+1}, W_{i+1}
-        let (T, cmT) = NIFS::<C1, CS1>::compute_cmT(
+        let cmT = NIFS::<C1, CS1>::compute_cmT(
+            Some(&nova.stream),
             &pp.cs_params,
             &vp.r1cs,
-            &nova.W_i.clone(),
-            &nova.U_i.clone(),
-            &nova.w_i.clone(),
-            &nova.u_i.clone(),
+            &nova.W_i,
+            &nova.U_i,
+            &nova.w_i,
+            &nova.u_i,
+            &nova.E,
+            &mut nova.T,
         )?;
-        let r_bits = ChallengeGadget::<C1>::get_challenge_native(
+        let (r_bits, cmT) = ChallengeGadget::<C1>::get_challenge_device(
+            Some(&nova.stream),
+            Some(&nova.stream3),
             &nova.poseidon_config,
             &nova.U_i,
-            &nova.u_i,
-            cmT,
+            &mut nova.u_i,
+            &cmT,
+            &nova.cmW,
         )?;
         let r_Fr = C1::ScalarField::from_bigint(BigInteger::from_bits_le(&r_bits))
             .ok_or(Error::OutOfBounds)?;
-        let W_i1 =
-            NIFS::<C1, CS1>::fold_witness(r_Fr, &nova.W_i, &nova.w_i, &T, C1::ScalarField::zero())?;
+        let W_i1 = NIFS::<C1, CS1>::fold_witness(
+            Some(&nova.stream),
+            r_Fr,
+            &nova.W_i,
+            &nova.w_i,
+            &mut nova.E,
+            &nova.T,
+        )?;
+        nova.stream.synchronize().unwrap();
 
         Ok(Self {
             _gc1: PhantomData,
@@ -338,6 +349,8 @@ where
             r: Some(r_Fr),
             cf_U_i: Some(nova.cf_U_i.clone()),
             cf_W_i: Some(nova.cf_W_i.clone()),
+            E: Some(C1::ScalarField::retrieve_e(&nova.E)),
+            cf_E: Some(C2::ScalarField::retrieve_e(&nova.cf_E)),
             vk,
             sigma,
             h1: nova.z_i[0],
@@ -421,19 +434,26 @@ where
             NonNativeAffineVar::new_input(cs.clone(), || Ok(self.cmT.unwrap_or_else(C1::zero)))?;
         let r = FpVar::new_input(cs.clone(), || Ok(self.r.unwrap_or_else(CF1::<C1>::zero)))?;
 
-        let W_i1 = self.W_i1.unwrap_or(Witness::<C1>::new(
-            vec![C1::ScalarField::zero(); self.r1cs.A.n_cols - IO_LEN - 1],
-            &self.r1cs,
-        ));
+        let W_i1 = self.W_i1.unwrap_or_else(|| {
+            Witness::<C1>::new(
+                vec![C1::ScalarField::zero(); self.r1cs.A.n_cols - IO_LEN - 1],
+                &self.r1cs,
+            )
+        });
         let W_i1_QW = Vec::new_committed(cs.clone(), || Ok(W_i1.QW))?;
-        let W_i1_E = Vec::new_committed(cs.clone(), || Ok(W_i1.E))?;
+        let W_i1_E = Vec::new_committed(cs.clone(), || {
+            Ok(self
+                .E
+                .unwrap_or_else(|| vec![C1::ScalarField::zero(); self.r1cs.A.n_rows]))
+        })?;
 
         let cf_W_i = self.cf_W_i.unwrap_or(Witness::<C2>::new(
             vec![C2::ScalarField::zero(); self.cf_r1cs.A.n_cols - 1 - self.cf_r1cs.l],
             &self.cf_r1cs,
         ));
-        let E_bits = cf_W_i
-            .E
+        let E_bits = self
+            .cf_E
+            .unwrap_or_else(|| vec![C2::ScalarField::zero(); self.cf_r1cs.A.n_rows])
             .iter()
             .map(|i| Vec::new_witness(cs.clone(), || Ok(i.into_bigint().to_bits_le())))
             .collect::<Result<Vec<_>, _>>()?;
@@ -603,7 +623,8 @@ where
                 H.clone(),
                 G.clone(),
                 E_bits,
-                NonNativeUintVar::new_witness(cs.clone(), || Ok(cf_W_i.rE))?.to_bits_le()?,
+                NonNativeUintVar::new_witness(cs.clone(), || Ok(C2::ScalarField::zero()))?
+                    .to_bits_le()?,
             )?
             .enforce_equal(&cf_U_i.cmE)?;
             PedersenGadget::<C2, GC2>::commit(
@@ -718,6 +739,7 @@ impl Decider {
         E::BaseField: PrimeField,
         <E::G1 as CurveGroup>::Config: MSM<E::G1>,
         E::ScalarField: Absorb + MVM,
+        E::G1Affine: AffineRepr<BaseField: PrimeField>,
     {
         // if i <= C1::ScalarField::one() {
         //     return Err(Error::NotEnoughSteps);
@@ -732,28 +754,43 @@ impl Decider {
         let snark_vk = vp;
 
         let inputs_timer = start_timer!(|| "Prepare inputs");
+        let one = <E::ScalarField as PrimeField>::BigInt::from(1u8);
+        let zero = <E::ScalarField as PrimeField>::BigInt::from(0u8);
         let public_inputs = vec![
-            vec![i],
-            z_0,
-            vec![h2],
+            vec![one, i.into_bigint()],
+            z_0.iter().map(|i| i.into_bigint()).collect::<Vec<_>>(),
             if vk.is_zero() {
-                vec![Zero::zero(), One::one(), Zero::zero()]
+                vec![h2.into_bigint(), zero, one, zero, U.u.into_bigint()]
             } else {
                 let (x, y) = vk.into_affine().xy().unwrap();
-                vec![x, y, One::one()]
+                vec![
+                    h2.into_bigint(),
+                    x.into_bigint(),
+                    y.into_bigint(),
+                    one,
+                    U.u.into_bigint(),
+                ]
             },
-            vec![U.u],
-            NonNativeAffineVar::inputize(U.cmQ)?,
-            NonNativeAffineVar::inputize(U.cmW)?,
-            NonNativeAffineVar::inputize(U.cmE)?,
-            NonNativeAffineVar::inputize(u.cmQ)?,
-            NonNativeAffineVar::inputize(u.cmW)?,
-            NonNativeAffineVar::inputize(cmT)?,
-            vec![r],
+            E::G1::normalize_batch(&[U.cmQ, U.cmW, U.cmE, u.cmQ, u.cmW, cmT])
+                .iter()
+                .flat_map(|i| {
+                    let (x, y) = i.xy().unwrap();
+                    x.into_bigint()
+                        .to_bits_le()
+                        .chunks(NonNativeUintVar::<E::ScalarField>::bits_per_limb())
+                        .chain(
+                            y.into_bigint()
+                                .to_bits_le()
+                                .chunks(NonNativeUintVar::<E::ScalarField>::bits_per_limb()),
+                        )
+                        .map(<E::ScalarField as PrimeField>::BigInt::from_bits_le).collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>(),
+            vec![r.into_bigint()],
         ]
         .concat();
 
-        let prepared_inputs = ark_groth16::Groth16::<E>::prepare_inputs(&snark_vk, &public_inputs)?;
+        let prepared_inputs = E::G1::msm_bigint(&snark_vk.vk.gamma_abc_g1.0, &public_inputs);
         end_timer!(inputs_timer);
 
         let snark_timer = start_timer!(|| "CP-SNARK verification");

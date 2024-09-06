@@ -20,6 +20,7 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace,
 use ark_std::{log2, Zero};
 use core::{borrow::Borrow, marker::PhantomData};
 
+
 use super::circuits::IO_LEN;
 use super::{circuits::ChallengeGadget, nifs::NIFS};
 use super::{CurrentInstance, CycleFoldCommittedInstance, RunningInstance};

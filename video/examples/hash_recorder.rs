@@ -26,11 +26,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &(i * blocks_per_step..(i + 1) * blocks_per_step)
                 .into_par_iter()
                 .map(|j| {
-                    let (y_block, u_block, v_block) = &blocks[j];
-
                     griffin.hash(
-                        &[&y_block[..], u_block, v_block]
-                            .concat()
+                        &blocks[j]
                             .chunks(Fr::MODULUS_BIT_SIZE as usize / MB_BITS)
                             .map(Fr::from_be_bytes_mod_order)
                             .collect::<Vec<_>>(),

@@ -25,12 +25,16 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace,
 use ark_std::fmt::Debug;
 use ark_std::{One, Zero};
 use core::{borrow::Borrow, marker::PhantomData};
+use icicle_cuda_runtime::memory::DeviceVec;
+use icicle_cuda_runtime::stream::CudaStream;
+
 
 use super::circuits::CF2;
 use super::CycleFoldCommittedInstance;
 use crate::constants::N_BITS_RO;
 use crate::folding::circuits::nonnative::uint::NonNativeUintVar;
 use crate::Error;
+use crate::MSM;
 
 // public inputs length for the CycleFoldCircuit: |[r, p1.x,y, p2.x,y, p3.x,y]|
 pub const CF_IO_LEN: usize = 7;
@@ -38,8 +42,7 @@ pub const CF_IO_LEN: usize = 7;
 /// CycleFoldCommittedInstanceVar is the CycleFold CommittedInstance representation in the Nova
 /// circuit.
 #[derive(Debug, Clone)]
-pub struct CycleFoldCommittedInstanceVar<C: CurveGroup, GC: CurveVar<C, CF2<C>>>
-{
+pub struct CycleFoldCommittedInstanceVar<C: CurveGroup, GC: CurveVar<C, CF2<C>>> {
     pub cmE: GC,
     pub u: NonNativeUintVar<CF2<C>>,
     pub cmW: GC,
@@ -127,8 +130,7 @@ where
 /// represented as native points, which are folded on the auxiliary curve constraints field (E2::Fr
 /// = E1::Fq).
 #[derive(Debug, Clone)]
-pub struct CommittedInstanceInCycleFoldVar<C: CurveGroup, GC: CurveVar<C, CF2<C>>>
-{
+pub struct CommittedInstanceInCycleFoldVar<C: CurveGroup, GC: CurveVar<C, CF2<C>>> {
     _c: PhantomData<C>,
     pub cmE: GC,
     pub cmW: GC,
@@ -267,6 +269,46 @@ where
         Ok(bits)
     }
 
+    pub fn get_challenge_device(
+        stream: Option<&CudaStream>,
+        poseidon_config: &PoseidonConfig<C::BaseField>,
+        U_i: &CycleFoldCommittedInstance<C>,
+        u_i: &mut CycleFoldCommittedInstance<C>,
+        cmT: &DeviceVec<<C::Config as MSM<C>>::R>,
+        cmW: &DeviceVec<<C::Config as MSM<C>>::R>,
+    ) -> Result<(Vec<bool>, C), SynthesisError>
+    where
+        C::Config: MSM<C>,
+    {
+        let mut sponge = PoseidonSponge::<C::BaseField>::new(poseidon_config);
+
+        let mut U_vec = U_i.to_field_elements().unwrap();
+        let U_cm_is_inf = U_vec.pop().unwrap();
+
+        u_i.cmW = <C::Config as MSM<C>>::retrieve_msm_result(stream, cmW);
+        let mut u_vec = u_i.to_field_elements().unwrap();
+        let u_cm_is_inf = u_vec.pop().unwrap();
+
+        let cmT = <C::Config as MSM<C>>::retrieve_msm_result(stream, cmT);
+        let (cmT_x, cmT_y, cmT_is_inf) = match cmT.into_affine().xy() {
+            Some((x, y)) => (x, y, C::BaseField::zero()),
+            None => (
+                C::BaseField::zero(),
+                C::BaseField::zero(),
+                C::BaseField::one(),
+            ),
+        };
+
+        // Concatenate `U_i.cmE_is_inf`, `U_i.cmW_is_inf`, `u_i.cmE_is_inf`, `u_i.cmW_is_inf`, `cmT_is_inf`
+        // to save constraints for sponge.squeeze_bits in the corresponding circuit
+        let is_inf = U_cm_is_inf * CF2::<C>::from(8u8) + u_cm_is_inf.double() + cmT_is_inf;
+
+        let input = [U_vec, u_vec, vec![cmT_x, cmT_y, is_inf]].concat();
+        sponge.absorb(&input);
+        let bits = sponge.squeeze_bits(N_BITS_RO);
+        Ok((bits, cmT))
+    }
+
     // compatible with the native get_challenge_native
     pub fn get_challenge_gadget(
         cs: ConstraintSystemRef<C::BaseField>,
@@ -393,7 +435,7 @@ pub mod tests {
 
     #[test]
     fn test_CycleFoldCircuit_constraints() {
-        let (_, _, _, _, ci1, _, ci2, _, ci3, _, cmT, r_bits, _) = prepare_simple_fold_inputs();
+        let (_, _, _, _, ci1, _, ci2, _, ci3, _, _, cmT, r_bits, _) = prepare_simple_fold_inputs();
         let r_Fq = Fq::from_bigint(BigInteger::from_bits_le(&r_bits)).unwrap();
 
         // cs is the Constraint System on the Curve Cycle auxiliary curve constraints field

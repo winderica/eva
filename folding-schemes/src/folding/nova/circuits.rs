@@ -21,9 +21,11 @@ use ark_r1cs_std::{
     R1CSVar,
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
-use ark_std::{add_to_trace, fmt::Debug, One, Zero};
+use ark_std::{add_to_trace, end_timer, fmt::Debug, start_timer, One, Zero};
 use core::{borrow::Borrow, marker::PhantomData};
+use icicle_cuda_runtime::{memory::DeviceVec, stream::CudaStream};
 use std::time::Instant;
+
 
 use super::{
     cyclefold::{
@@ -31,12 +33,12 @@ use super::{
     },
     CurrentInstance, CycleFoldCommittedInstance, RunningInstance,
 };
-use crate::constants::N_BITS_RO;
 use crate::folding::circuits::nonnative::{
     affine::{nonnative_affine_to_field_elements, NonNativeAffineVar},
     uint::NonNativeUintVar,
 };
 use crate::frontend::{FCircuit, LookupArgumentRef};
+use crate::{constants::N_BITS_RO, MSM};
 
 /// CF1 represents the ConstraintField used for the main Nova circuit which is over E1::Fr, where
 /// E1 is the main curve where we do the folding.
@@ -305,6 +307,50 @@ where
         Ok(bits)
     }
 
+    pub fn get_challenge_device(
+        stream_t: Option<&CudaStream>,
+        stream_w: Option<&CudaStream>,
+        poseidon_config: &PoseidonConfig<C::ScalarField>,
+        U_i: &RunningInstance<C>,
+        u_i: &mut CurrentInstance<C>,
+        cmT: &DeviceVec<<C::Config as MSM<C>>::R>,
+        cmW: &Option<DeviceVec<<C::Config as MSM<C>>::R>>,
+    ) -> Result<(Vec<bool>, C), SynthesisError> where C::Config: MSM<C>, {
+        let mut sponge = PoseidonSponge::<C::ScalarField>::new(poseidon_config);
+        let r;
+        let input = vec![
+            vec![U_i.u],
+            U_i.x.clone(),
+            nonnative_affine_to_field_elements::<C>(U_i.cmE),
+            nonnative_affine_to_field_elements::<C>(U_i.cmQ),
+            nonnative_affine_to_field_elements::<C>(U_i.cmW),
+            vec![u_i.u],
+            u_i.x.clone(),
+            nonnative_affine_to_field_elements::<C>(u_i.cmE),
+            nonnative_affine_to_field_elements::<C>(u_i.cmQ),
+            nonnative_affine_to_field_elements::<C>({
+                if let Some(cmW) = cmW {
+                    let cmW = <C::Config as MSM<C>>::retrieve_msm_result(
+                        stream_w, cmW,
+                    );
+                    u_i.cmW = cmW;
+                }
+                u_i.cmW
+            }),
+            nonnative_affine_to_field_elements::<C>({
+                let cmT = <C::Config as MSM<C>>::retrieve_msm_result(
+                    stream_t, cmT,
+                );
+                r = cmT;
+                r
+            }),
+        ]
+        .concat();
+        sponge.absorb(&input);
+        let bits = sponge.squeeze_bits(N_BITS_RO);
+        Ok((bits, r))
+    }
+
     // compatible with the native get_challenge_native
     pub fn get_challenge_gadget(
         cs: ConstraintSystemRef<C::ScalarField>,
@@ -359,8 +405,7 @@ pub struct AugmentedFCircuit<
     pub U_i1_cmQ: Option<C1>,
     pub U_i1_cmW: Option<C1>,
     pub cmT: Option<C1>,
-    pub F: &'b FC,          // F circuit
-    pub x: Option<CF1<C1>>, // public input (u_{i+1}.x[0])
+    pub F: &'b FC, // F circuit
 
     // cyclefold verifier on C1
     // Here 'cf1, cf2' are for each of the CycleFold circuits, corresponding to the fold of cmW and
@@ -372,7 +417,6 @@ pub struct AugmentedFCircuit<
     pub cf1_cmT: Option<C2>,
     pub cf2_cmT: Option<C2>,
     pub cf3_cmT: Option<C2>,
-    pub cf_x: Option<CF1<C1>>, // public input (u_{i+1}.x[1])
 
     pub external_inputs: &'b FC::ExternalInputs,
 }
@@ -404,7 +448,6 @@ where
             U_i1_cmW: None,
             cmT: None,
             F: F_circuit,
-            x: None,
             // cyclefold values
             cf1_u_i_cmW: None,
             cf2_u_i_cmW: None,
@@ -413,13 +456,12 @@ where
             cf1_cmT: None,
             cf2_cmT: None,
             cf3_cmT: None,
-            cf_x: None,
             external_inputs,
         }
     }
 }
 
-impl<'b, C1, C2, GC2, FC> ConstraintSynthesizer<CF1<C1>> for AugmentedFCircuit<'b, C1, C2, GC2, FC>
+impl<'b, C1, C2, GC2, FC> AugmentedFCircuit<'b, C1, C2, GC2, FC>
 where
     C1: CurveGroup,
     C2: CurveGroup,
@@ -432,8 +474,9 @@ where
     C1: CurveGroup<BaseField = C2::ScalarField, ScalarField = C2::BaseField>,
     for<'a> &'a GC2: GroupOpsBounds<'a, C2, GC2>,
 {
-    fn generate_constraints(self, cs: ConstraintSystemRef<CF1<C1>>) -> Result<(), SynthesisError> {
+    pub fn run(self, cs: ConstraintSystemRef<CF1<C1>>) -> Result<Vec<CF1<C1>>, SynthesisError> {
         let t = cs.num_constraints();
+        let timer = start_timer!(|| "Variable creation");
         let i = FpVar::<CF1<C1>>::new_witness(cs.clone(), || {
             Ok(self.i.unwrap_or_else(CF1::<C1>::zero))
         })?;
@@ -484,6 +527,7 @@ where
 
         let i_usize = self.i_usize.unwrap_or(0);
         let is_basecase = i.is_zero()?;
+        end_timer!(timer);
         add_to_trace!(|| "Variable creation", || format!(
             "{} constraints",
             cs.num_constraints() - t
@@ -491,6 +535,7 @@ where
 
         // get z_{i+1} from the F circuit
         let t = cs.num_constraints();
+        let timer = start_timer!(|| "Step circuit");
         let z_i1 = self.F.generate_step_constraints(
             cs.clone(),
             self.la.clone(),
@@ -498,6 +543,7 @@ where
             z_i.clone(),
             &self.external_inputs,
         )?;
+        end_timer!(timer);
         add_to_trace!(|| "Step circuit", || format!(
             "{} constraints",
             cs.num_constraints() - t
@@ -507,6 +553,7 @@ where
         // Primary Part
         // P.1. Compute u_i.x
         // u_i.x[0] = H(i, z_0, z_i, U_i)
+        let timer = start_timer!(|| "Fold primary instances");
         let (u_i_x, U_i_vec) =
             U_i.clone()
                 .hash(&crh_params, i.clone(), z_0.clone(), z_i.clone())?;
@@ -554,12 +601,14 @@ where
         U_i1.cmE = U_i1_cmE;
         U_i1.cmQ = U_i1_cmQ;
         U_i1.cmW = U_i1_cmW;
+        end_timer!(timer);
         add_to_trace!(|| "Fold primary instances", || format!(
             "{} constraints",
             cs.num_constraints() - t
         ));
 
         let t = cs.num_constraints();
+        let timer = start_timer!(|| "Fold CycleFold instances");
         // CycleFold part
         // C.1. Compute cf1_u_i.x and cf2_u_i.x
         let cfWa_x = vec![
@@ -581,7 +630,13 @@ where
             U_i1.cmW.y.clone(),
         ];
         let cfE_x = vec![
-            r_nonnat, U_i.cmE.x, U_i.cmE.y, cmT.x, cmT.y, U_i1.cmE.x.clone(), U_i1.cmE.y.clone(),
+            r_nonnat,
+            U_i.cmE.x,
+            U_i.cmE.y,
+            cmT.x,
+            cmT.y,
+            U_i1.cmE.x.clone(),
+            U_i1.cmE.y.clone(),
         ];
 
         // ensure that cf1_u & cf2_u have as public inputs the cmW & cmE from main instances U_i,
@@ -686,6 +741,7 @@ where
             cf2_U_i1, // the output from NIFS.V(cf1_r, cf_U, cfE_u)
             cf3_u_i,
         )?;
+        end_timer!(timer);
         add_to_trace!(|| "Fold CycleFold instances", || format!(
             "{} constraints",
             cs.num_constraints() - t
@@ -694,6 +750,7 @@ where
         // Back to Primary Part
 
         let t = cs.num_constraints();
+        let timer = start_timer!(|| "Check public inputs");
         // P.4.a compute and check the first output of F'
         // Base case: u_{i+1}.x[0] == H((i+1, z_0, z_{i+1}, U_{\bot})
         // Non-base case: u_{i+1}.x[0] == H((i+1, z_0, z_{i+1}, U_{i+1})
@@ -709,7 +766,13 @@ where
             z_0.clone(),
             z_i1.clone(),
         )?;
-        let x = FpVar::new_input(cs.clone(), || Ok(self.x.unwrap_or(u_i1_x_base.value()?)))?;
+        let x = FpVar::new_input(cs.clone(), || {
+            (if i_usize == 0 {
+                u_i1_x_base.value()
+            } else {
+                u_i1_x.value()
+            })
+        })?;
         x.enforce_equal(&is_basecase.select(&u_i1_x_base, &u_i1_x)?)?;
 
         // P.4.b compute and check the second output of F'
@@ -720,15 +783,20 @@ where
             CycleFoldCommittedInstanceVar::<C2, GC2>::new_constant(cs.clone(), cf_u_dummy)?
                 .hash(&crh_params)?;
         let cf_x = FpVar::new_input(cs.clone(), || {
-            Ok(self.cf_x.unwrap_or(cf_u_i1_x_base.value()?))
+            (if i_usize == 0 {
+                cf_u_i1_x_base.value()
+            } else {
+                cf_u_i1_x.value()
+            })
         })?;
         cf_x.enforce_equal(&is_basecase.select(&cf_u_i1_x_base, &cf_u_i1_x)?)?;
+        end_timer!(timer);
         add_to_trace!(|| "Check public inputs", || format!(
             "{} constraints",
             cs.num_constraints() - t
         ));
 
-        Ok(())
+        z_i1.value()
     }
 }
 
@@ -769,7 +837,7 @@ pub mod tests {
 
     #[test]
     fn test_nifs_gadget() {
-        let (_, _, _, _, ci1, _, ci2, _, ci3, _, cmT, _, r_Fr) = prepare_simple_fold_inputs();
+        let (_, _, _, _, ci1, _, ci2, _, ci3, _, _, cmT, _, r_Fr) = prepare_simple_fold_inputs();
 
         let ci3_verifier = NIFS::<Projective, Pedersen<Projective>>::verify(r_Fr, &ci1, &ci2, &cmT);
         assert_eq!(ci3_verifier, ci3);
@@ -856,13 +924,9 @@ pub mod tests {
         let cmT = Projective::rand(&mut rng);
 
         // compute the challenge natively
-        let r_bits = ChallengeGadget::<Projective>::get_challenge_native(
-            &poseidon_config,
-            &U_i,
-            &u_i,
-            cmT,
-        )
-        .unwrap();
+        let r_bits =
+            ChallengeGadget::<Projective>::get_challenge_native(&poseidon_config, &U_i, &u_i, cmT)
+                .unwrap();
         let r = Fr::from_bigint(BigInteger::from_bits_le(&r_bits)).unwrap();
 
         let cs = ConstraintSystem::<Fr>::new_ref();

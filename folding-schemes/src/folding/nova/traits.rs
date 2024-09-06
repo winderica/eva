@@ -1,5 +1,5 @@
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::{CurveGroup};
+use ark_ec::CurveGroup;
 use ark_std::{One, Zero};
 
 use super::{CurrentInstance, CycleFoldCommittedInstance, RunningInstance, Witness};
@@ -40,6 +40,7 @@ pub trait NovaR1CS<C: CurveGroup> {
         &self,
         W: &Witness<C>,
         U: &RunningInstance<C>,
+        E: Vec<C::ScalarField>,
     ) -> Result<(), Error>;
 
     /// checks the Relaxed R1CS relation (corresponding to the current R1CS) for the given Witness
@@ -48,6 +49,7 @@ pub trait NovaR1CS<C: CurveGroup> {
         &self,
         W: &Witness<C>,
         U: &CurrentInstance<C>,
+        E: Vec<C::ScalarField>,
     ) -> Result<(), Error>;
 
     /// checks the Relaxed R1CS relation (corresponding to the current R1CS) for the given Witness
@@ -56,6 +58,7 @@ pub trait NovaR1CS<C: CurveGroup> {
         &self,
         W: &Witness<C>,
         U: &CycleFoldCommittedInstance<C>,
+        E: Vec<C::ScalarField>,
     ) -> Result<(), Error>;
 }
 
@@ -129,10 +132,11 @@ where
         &self,
         W: &Witness<C>,
         U: &RunningInstance<C>,
+        E: Vec<C::ScalarField>,
     ) -> Result<(), Error> {
         let mut rel_r1cs = self.clone().relax();
         rel_r1cs.u = U.u;
-        rel_r1cs.E = W.E.clone();
+        rel_r1cs.E = E;
 
         let Z: Vec<C::ScalarField> = [vec![U.u], U.x.to_vec(), W.QW.to_vec()].concat();
         rel_r1cs.check_relation(&Z)
@@ -142,10 +146,11 @@ where
         &self,
         W: &Witness<C>,
         U: &CurrentInstance<C>,
+        E: Vec<C::ScalarField>,
     ) -> Result<(), Error> {
         let mut rel_r1cs = self.clone().relax();
         rel_r1cs.u = U.u;
-        rel_r1cs.E = W.E.clone();
+        rel_r1cs.E = E;
 
         let Z: Vec<C::ScalarField> = [vec![U.u], U.x.to_vec(), W.QW.to_vec()].concat();
         rel_r1cs.check_relation(&Z)
@@ -155,10 +160,11 @@ where
         &self,
         W: &Witness<C>,
         U: &CycleFoldCommittedInstance<C>,
+        E: Vec<C::ScalarField>,
     ) -> Result<(), Error> {
         let mut rel_r1cs = self.clone().relax();
         rel_r1cs.u = U.u;
-        rel_r1cs.E = W.E.clone();
+        rel_r1cs.E = E;
 
         let Z: Vec<C::ScalarField> = [vec![U.u], U.x.to_vec(), W.QW.to_vec()].concat();
         rel_r1cs.check_relation(&Z)

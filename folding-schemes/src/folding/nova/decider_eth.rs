@@ -8,6 +8,7 @@ use ark_std::rand::{CryptoRng, RngCore};
 use ark_std::Zero;
 use core::marker::PhantomData;
 
+
 pub use super::decider_eth_circuit::{DeciderEthCircuit, KZGChallengesGadget};
 use super::{circuits::CF2, nifs::NIFS, Nova};
 use super::{CurrentInstance, RunningInstance};

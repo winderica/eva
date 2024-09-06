@@ -1,11 +1,14 @@
 use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::CurveGroup;
 use ark_std::{cfg_into_iter, cfg_iter, end_timer, start_timer, Zero};
+use icicle_cuda_runtime::memory::DeviceVec;
+use icicle_cuda_runtime::stream::CudaStream;
 use rayon::prelude::*;
 use std::marker::PhantomData;
 
 use super::{CurrentInstance, CycleFoldCommittedInstance, RunningInstance, Witness};
 use crate::ccs::r1cs::R1CS;
+use crate::commitment::pedersen::Params;
 use crate::commitment::CommitmentScheme;
 use crate::transcript::Transcript;
 use crate::utils::vec::*;
@@ -21,7 +24,7 @@ where
     _cp: PhantomData<CS>,
 }
 
-impl<C: CurveGroup, CS: CommitmentScheme<C>> NIFS<C, CS>
+impl<C: CurveGroup, CS: CommitmentScheme<C, ProverParams = Params<C>>> NIFS<C, CS>
 where
     C::ScalarField: Absorb + MVM,
     C::Config: MSM<C>,
@@ -55,19 +58,14 @@ where
     }
 
     pub fn fold_witness(
+        stream: Option<&CudaStream>,
         r: C::ScalarField,
         w1: &Witness<C>,
         w2: &Witness<C>,
-        T: &[C::ScalarField],
-        rT: C::ScalarField,
+        E: &mut DeviceVec<C::ScalarField>,
+        T: &DeviceVec<C::ScalarField>,
     ) -> Result<Witness<C>, Error> {
-        let r2 = r * r;
-        let E = cfg_iter!(&w1.E)
-            .zip(T)
-            .zip(&w2.E)
-            .map(|((a, b), c)| *a + (r * b) + (r2 * c))
-            .collect::<Vec<_>>();
-        let rE = w1.rE + r * rT + r2 * w2.rE;
+        C::ScalarField::update_e(stream, E, T, r);
         let QW: Vec<C::ScalarField> = cfg_iter!(w1.QW)
             .zip(&w2.QW)
             .map(|(a, b)| *a + (r * b))
@@ -75,8 +73,6 @@ where
         let rQ = w1.rQ + r * w2.rQ;
         let rW = w1.rW + r * w2.rW;
         Ok(Witness::<C> {
-            E,
-            rE,
             QW,
             rW,
             rQ,
@@ -90,8 +86,7 @@ where
         ci2: &CurrentInstance<C>, // u_i
         cmT: &C,
     ) -> RunningInstance<C> {
-        let r2 = r * r;
-        let cmE = ci1.cmE + cmT.mul(r) + ci2.cmE.mul(r2);
+        let cmE = ci1.cmE + cmT.mul(r);
         let u = ci1.u + r * ci2.u;
         let cmQ = ci1.cmQ + ci2.cmQ.mul(r);
         let cmW = ci1.cmW + ci2.cmW.mul(r);
@@ -115,8 +110,7 @@ where
         ci2: &CycleFoldCommittedInstance<C>, // u_i
         cmT: &C,
     ) -> CycleFoldCommittedInstance<C> {
-        let r2 = r * r;
-        let cmE = ci1.cmE + cmT.mul(r) + ci2.cmE.mul(r2);
+        let cmE = ci1.cmE + cmT.mul(r);
         let u = ci1.u + r * ci2.u;
         let cmW = ci1.cmW + ci2.cmW.mul(r);
         let x = cfg_iter!(ci1.x)
@@ -131,78 +125,112 @@ where
 
     /// compute_cmT is part of the NIFS.P logic
     pub fn compute_cmT(
+        stream: Option<&CudaStream>,
         cs_prover_params: &CS::ProverParams,
         r1cs: &R1CS<C::ScalarField>,
         w1: &Witness<C>,
         ci1: &RunningInstance<C>,
         w2: &Witness<C>,
         ci2: &CurrentInstance<C>,
-    ) -> Result<(Vec<C::ScalarField>, C), Error> {
-        let timer = start_timer!(|| "prepare variables");
-        let z1: Vec<C::ScalarField> = [&[ci1.u], &ci1.x[..], &w1.QW[..]].concat();
-        let z2: Vec<C::ScalarField> = [&[ci2.u], &ci2.x[..], &w2.QW[..]].concat();
-        end_timer!(timer);
-
+        E: &DeviceVec<C::ScalarField>,
+        T: &mut DeviceVec<C::ScalarField>,
+    ) -> Result<DeviceVec<<C::Config as MSM<C>>::R>, Error> {
         let timer = start_timer!(|| "Compute T");
         // compute cross terms
-        let T = C::ScalarField::compute_t(&r1cs.A.cuda, &r1cs.B.cuda, &r1cs.C.cuda, &z1, &z2);
+        C::ScalarField::compute_t(
+            stream,
+            &r1cs.A.cuda,
+            &r1cs.B.cuda,
+            &r1cs.C.cuda,
+            &[ci1.u],
+            &ci1.x,
+            &w1.QW,
+            &[ci2.u],
+            &ci2.x,
+            &w2.QW,
+            E,
+            T,
+        );
         // let T = Self::compute_T(r1cs, ci1.u, ci2.u, &z1, &z2)?;
         end_timer!(timer);
 
         let timer = start_timer!(|| "Commit to T");
         // use r_T=0 since we don't need hiding property for cm(T)
-        let cmT = CS::commit(cs_prover_params, &T, &C::ScalarField::zero())?;
+        let cmT = <C::Config as MSM<C>>::var_msm_device_precomputed(
+            stream,
+            &cs_prover_params.device_generators,
+            &T,
+            0,
+        );
         end_timer!(timer);
 
-        Ok((T, cmT))
+        Ok((cmT))
     }
 
     pub fn compute_cyclefold_cmT(
+        stream: Option<&CudaStream>,
         cs_prover_params: &CS::ProverParams,
         r1cs: &R1CS<C::ScalarField>, // R1CS over C2.Fr=C1.Fq (here C=C2)
         w1: &Witness<C>,
         ci1: &CycleFoldCommittedInstance<C>,
         w2: &Witness<C>,
         ci2: &CycleFoldCommittedInstance<C>,
-    ) -> Result<(Vec<C::ScalarField>, C), Error>
+        E: &DeviceVec<C::ScalarField>,
+        T: &mut DeviceVec<C::ScalarField>,
+    ) -> Result<DeviceVec<<C::Config as MSM<C>>::R>, Error>
     where
         <C as ark_ec::CurveGroup>::BaseField: ark_ff::PrimeField,
     {
-        let timer = start_timer!(|| "prepare variables");
-        let z1: Vec<C::ScalarField> = [&[ci1.u], &ci1.x[..], &w1.QW[..]].concat();
-        let z2: Vec<C::ScalarField> = [&[ci2.u], &ci2.x[..], &w2.QW[..]].concat();
-        end_timer!(timer);
-
         let timer = start_timer!(|| "Compute T");
         // compute cross terms
-        let T = C::ScalarField::compute_t(&r1cs.A.cuda, &r1cs.B.cuda, &r1cs.C.cuda, &z1, &z2);
+        C::ScalarField::compute_t(
+            stream,
+            &r1cs.A.cuda,
+            &r1cs.B.cuda,
+            &r1cs.C.cuda,
+            &[ci1.u],
+            &ci1.x,
+            &w1.QW,
+            &[ci2.u],
+            &ci2.x,
+            &w2.QW,
+            E,
+            T,
+        );
         // let T = Self::compute_T(r1cs, ci1.u, ci2.u, &z1, &z2)?;
         end_timer!(timer);
 
         let timer = start_timer!(|| "Commit to T");
         // use r_T=0 since we don't need hiding property for cm(T)
-        let cmT = CS::commit(cs_prover_params, &T, &C::ScalarField::zero())?;
+        let cmT = <C::Config as MSM<C>>::var_msm_device_precomputed(
+            stream,
+            &cs_prover_params.device_generators,
+            &T,
+            0,
+        );
         end_timer!(timer);
 
-        Ok((T, cmT))
+        Ok(cmT)
     }
 
     /// fold_instances is part of the NIFS.P logic described in
     /// [Nova](https://eprint.iacr.org/2021/370.pdf)'s section 4. It returns the folded Committed
     /// Instances and the Witness.
     pub fn fold_instances(
+        stream: Option<&CudaStream>,
         r: C::ScalarField,
         w1: &Witness<C>,
         ci1: &RunningInstance<C>,
         w2: &Witness<C>,
         ci2: &CurrentInstance<C>,
-        T: &[C::ScalarField],
+        E: &mut DeviceVec<C::ScalarField>,
+        T: &DeviceVec<C::ScalarField>,
         cmT: C,
     ) -> Result<(Witness<C>, RunningInstance<C>), Error> {
         let timer = start_timer!(|| "Fold witnesses");
         // fold witness
         // use r_T=0 since we don't need hiding property for cm(T)
-        let w3 = NIFS::<C, CS>::fold_witness(r, w1, w2, T, C::ScalarField::zero())?;
+        let w3 = NIFS::<C, CS>::fold_witness(stream, r, w1, w2, E, T)?;
         end_timer!(timer);
 
         let timer = start_timer!(|| "Fold instances");
@@ -217,17 +245,19 @@ where
     /// [Nova](https://eprint.iacr.org/2021/370.pdf)'s section 4. It returns the folded Committed
     /// Instances and the Witness.
     pub fn fold_cf_instances(
+        stream: Option<&CudaStream>,
         r: C::ScalarField,
         w1: &Witness<C>,
         ci1: &CycleFoldCommittedInstance<C>,
         w2: &Witness<C>,
         ci2: &CycleFoldCommittedInstance<C>,
-        T: &[C::ScalarField],
+        E: &mut DeviceVec<C::ScalarField>,
+        T: &DeviceVec<C::ScalarField>,
         cmT: C,
     ) -> Result<(Witness<C>, CycleFoldCommittedInstance<C>), Error> {
         // fold witness
         // use r_T=0 since we don't need hiding property for cm(T)
-        let w3 = NIFS::<C, CS>::fold_witness(r, w1, w2, T, C::ScalarField::zero())?;
+        let w3 = NIFS::<C, CS>::fold_witness(stream, r, w1, w2, E, T)?;
 
         // fold committed instances
         let ci3 = NIFS::<C, CS>::fold_cf_committed_instance(r, ci1, ci2, &cmT);
@@ -273,21 +303,6 @@ where
         }
         Ok(())
     }
-
-    pub fn prove_commitments(
-        tr: &mut impl Transcript<C>,
-        cs_prover_params: &CS::ProverParams,
-        w: &Witness<C>,
-        ci: &RunningInstance<C>,
-        T: Vec<C::ScalarField>,
-        cmT: &C,
-    ) -> Result<[CS::Proof; 4], Error> {
-        let cmE_proof = CS::prove(cs_prover_params, tr, &ci.cmE, &w.E, &w.rE, None)?;
-        let cmQ_proof = CS::prove(cs_prover_params, tr, &ci.cmQ, &w.q(), &w.rQ, None)?;
-        let cmW_proof = CS::prove(cs_prover_params, tr, &ci.cmW, &w.w(), &w.rW, None)?;
-        let cmT_proof = CS::prove(cs_prover_params, tr, cmT, &T, &C::ScalarField::zero(), None)?; // cm(T) is committed with rT=0
-        Ok([cmE_proof, cmQ_proof, cmW_proof, cmT_proof])
-    }
 }
 
 #[cfg(test)]
@@ -302,7 +317,7 @@ pub mod tests {
     use crate::commitment::pedersen::{Params as PedersenParams, Pedersen};
     use crate::folding::nova::circuits::ChallengeGadget;
     use crate::folding::nova::traits::NovaR1CS;
-    use crate::transcript::poseidon::{poseidon_test_config, PoseidonTranscript};
+    use crate::transcript::poseidon::poseidon_test_config;
     use crate::MVM;
 
     #[allow(clippy::type_complexity)]
@@ -310,16 +325,17 @@ pub mod tests {
         PedersenParams<C>,
         PoseidonConfig<C::ScalarField>,
         R1CS<C::ScalarField>,
-        Witness<C>,          // w1
-        RunningInstance<C>,  // ci1
-        Witness<C>,          // w2
-        CurrentInstance<C>,  // ci2
-        Witness<C>,          // w3
-        RunningInstance<C>,  // ci3
-        Vec<C::ScalarField>, // T
-        C,                   // cmT
-        Vec<bool>,           // r_bits
-        C::ScalarField,      // r_Fr
+        Witness<C>,                // w1
+        RunningInstance<C>,        // ci1
+        Witness<C>,                // w2
+        CurrentInstance<C>,        // ci2
+        Witness<C>,                // w3
+        RunningInstance<C>,        // ci3
+        DeviceVec<C::ScalarField>, // E
+        DeviceVec<C::ScalarField>, // T
+        C,                         // cmT
+        Vec<bool>,                 // r_bits
+        C::ScalarField,            // r_Fr
     )
     where
         C: CurveGroup,
@@ -341,30 +357,44 @@ pub mod tests {
 
         // compute committed instances
         let ci1 = w1
-            .commit_running::<Pedersen<C>>(&pedersen_params, x1.clone())
+            .commit_running::<Pedersen<C>>(
+                &pedersen_params,
+                x1.clone(),
+                &vec![C::ScalarField::zero(); r1cs.A.n_rows],
+            )
             .unwrap();
         let ci2 = w2
             .commit_current::<Pedersen<C>>(&pedersen_params, x2.clone())
             .unwrap();
 
+        let mut T = C::ScalarField::alloc_vec(r1cs.A.n_rows);
+        let mut E = C::ScalarField::alloc_vec(r1cs.A.n_rows);
+
         // NIFS.P
-        let (T, cmT) =
-            NIFS::<C, Pedersen<C>>::compute_cmT(&pedersen_params, &r1cs, &w1, &ci1, &w2, &ci2)
-                .unwrap();
+        let cmT = NIFS::<C, Pedersen<C>>::compute_cmT(
+            None,
+            &pedersen_params,
+            &r1cs,
+            &w1,
+            &ci1,
+            &w2,
+            &ci2,
+            &E,
+            &mut T,
+        )
+        .unwrap();
+        let cmT = <C::Config as MSM<C>>::retrieve_msm_result(None, &cmT);
 
         let poseidon_config = poseidon_test_config::<C::ScalarField>();
 
-        let r_bits = ChallengeGadget::<C>::get_challenge_native(
-            &poseidon_config,
-            &ci1,
-            &ci2,
-            cmT,
-        )
-        .unwrap();
+        let r_bits =
+            ChallengeGadget::<C>::get_challenge_native(&poseidon_config, &ci1, &ci2, cmT).unwrap();
         let r_Fr = C::ScalarField::from_bigint(BigInteger::from_bits_le(&r_bits)).unwrap();
 
-        let (w3, ci3) =
-            NIFS::<C, Pedersen<C>>::fold_instances(r_Fr, &w1, &ci1, &w2, &ci2, &T, cmT).unwrap();
+        let (w3, ci3) = NIFS::<C, Pedersen<C>>::fold_instances(
+            None, r_Fr, &w1, &ci1, &w2, &ci2, &mut E, &T, cmT,
+        )
+        .unwrap();
 
         (
             pedersen_params,
@@ -376,6 +406,7 @@ pub mod tests {
             ci2,
             w3,
             ci3,
+            E,
             T,
             cmT,
             r_bits,
@@ -397,34 +428,41 @@ pub mod tests {
         let u_i = CurrentInstance::dummy(x1.len());
         let W_i = Witness::<Projective>::new(vec![Fr::zero(); w1.len()], &r1cs);
         let U_i = RunningInstance::dummy(x1.len());
-        r1cs.check_relaxed_current_instance_relation(&w_i, &u_i)
+        let mut T = Fr::alloc_vec(r1cs.A.n_rows);
+        let mut E = Fr::alloc_vec(r1cs.A.n_rows);
+
+        r1cs.check_relaxed_current_instance_relation(&w_i, &u_i, Fr::retrieve_e(&E))
             .unwrap();
-        r1cs.check_relaxed_running_instance_relation(&W_i, &U_i)
+        r1cs.check_relaxed_running_instance_relation(&W_i, &U_i, Fr::retrieve_e(&E))
             .unwrap();
 
         let r_Fr = Fr::from(3_u32);
 
-        let (T, cmT) = NIFS::<Projective, Pedersen<Projective>>::compute_cmT(
+        let cmT = NIFS::<Projective, Pedersen<Projective>>::compute_cmT(
+            None,
             &pedersen_params,
             &r1cs,
             &W_i,
             &U_i,
             &w_i,
             &u_i,
+            &E,
+            &mut T,
         )
         .unwrap();
+        let cmT = ark_grumpkin::GrumpkinConfig::retrieve_msm_result(None, &cmT);
         let (W_i1, U_i1) = NIFS::<Projective, Pedersen<Projective>>::fold_instances(
-            r_Fr, &W_i, &U_i, &w_i, &u_i, &T, cmT,
+            None, r_Fr, &W_i, &U_i, &w_i, &u_i, &mut E, &T, cmT,
         )
         .unwrap();
-        r1cs.check_relaxed_running_instance_relation(&W_i1, &U_i1)
+        r1cs.check_relaxed_running_instance_relation(&W_i1, &U_i1, Fr::retrieve_e(&E))
             .unwrap();
     }
 
     // fold 2 instances into one
     #[test]
     fn test_nifs_one_fold() {
-        let (pedersen_params, poseidon_config, r1cs, w1, ci1, w2, ci2, w3, ci3, T, cmT, _, r) =
+        let (pedersen_params, poseidon_config, r1cs, w1, ci1, w2, ci2, w3, ci3, E, T, cmT, _, r) =
             prepare_simple_fold_inputs();
 
         // NIFS.V
@@ -432,17 +470,21 @@ pub mod tests {
         assert_eq!(ci3_v, ci3);
 
         // check that relations hold for the 2 inputted instances and the folded one
-        r1cs.check_relaxed_running_instance_relation(&w1, &ci1)
+        r1cs.check_relaxed_running_instance_relation(&w1, &ci1, vec![Fr::zero(); r1cs.A.n_rows])
             .unwrap();
-        r1cs.check_relaxed_current_instance_relation(&w2, &ci2)
+        r1cs.check_relaxed_current_instance_relation(&w2, &ci2, vec![Fr::zero(); r1cs.A.n_rows])
             .unwrap();
-        r1cs.check_relaxed_running_instance_relation(&w3, &ci3)
+        r1cs.check_relaxed_running_instance_relation(&w3, &ci3, Fr::retrieve_e(&E))
             .unwrap();
 
         // check that folded commitments from folded instance (ci) are equal to folding the
         // use folded rE, rW to commit w3
         let ci3_expected = w3
-            .commit_running::<Pedersen<Projective>>(&pedersen_params, ci3.x.clone())
+            .commit_running::<Pedersen<Projective>>(
+                &pedersen_params,
+                ci3.x.clone(),
+                &Fr::retrieve_e(&E),
+            )
             .unwrap();
         assert_eq!(ci3_expected.cmE, ci3.cmE);
         assert_eq!(ci3_expected.cmQ, ci3.cmQ);
@@ -450,58 +492,11 @@ pub mod tests {
 
         // next equalities should hold since we started from two cmE of zero-vector E's
         assert_eq!(ci3.cmE, cmT.mul(r));
-        assert_eq!(w3.E, vec_scalar_mul(&T, &r));
+        assert_eq!(Fr::retrieve_e(&E), vec_scalar_mul(&Fr::retrieve_e(&T), &r));
 
         // NIFS.Verify_Folded_Instance:
         NIFS::<Projective, Pedersen<Projective>>::verify_folded_instance(r, &ci1, &ci2, &ci3, &cmT)
             .unwrap();
-
-        // init Prover's transcript
-        let mut transcript_p = PoseidonTranscript::<Projective>::new(&poseidon_config);
-        // init Verifier's transcript
-        let mut transcript_v = PoseidonTranscript::<Projective>::new(&poseidon_config);
-
-        // prove the ci3.cmE, ci3.cmW, cmT commitments
-        let cm_proofs = NIFS::<Projective, Pedersen<Projective>>::prove_commitments(
-            &mut transcript_p,
-            &pedersen_params,
-            &w3,
-            &ci3,
-            T,
-            &cmT,
-        )
-        .unwrap();
-
-        // verify the ci3.cmE, ci3.cmW, cmT commitments
-        assert_eq!(cm_proofs.len(), 4);
-        Pedersen::<Projective>::verify(
-            &pedersen_params,
-            &mut transcript_v,
-            &ci3.cmE,
-            &cm_proofs[0].clone(),
-        )
-        .unwrap();
-        Pedersen::<Projective>::verify(
-            &pedersen_params,
-            &mut transcript_v,
-            &ci3.cmQ,
-            &cm_proofs[1].clone(),
-        )
-        .unwrap();
-        Pedersen::<Projective>::verify(
-            &pedersen_params,
-            &mut transcript_v,
-            &ci3.cmW,
-            &cm_proofs[2].clone(),
-        )
-        .unwrap();
-        Pedersen::<Projective>::verify(
-            &pedersen_params,
-            &mut transcript_v,
-            &cmT,
-            &cm_proofs[3].clone(),
-        )
-        .unwrap();
     }
 
     #[test]
@@ -516,14 +511,21 @@ pub mod tests {
         // prepare the running instance
         let mut running_instance_w = Witness::<Projective>::new(w.clone(), &r1cs);
         let mut running_committed_instance = running_instance_w
-            .commit_running::<Pedersen<Projective>>(&pedersen_params, x)
+            .commit_running::<Pedersen<Projective>>(
+                &pedersen_params,
+                x,
+                &vec![Fr::zero(); r1cs.A.n_rows],
+            )
             .unwrap();
 
         r1cs.check_relaxed_running_instance_relation(
             &running_instance_w,
             &running_committed_instance,
+            vec![Fr::zero(); r1cs.A.n_rows],
         )
         .unwrap();
+        let mut T = Fr::alloc_vec(r1cs.A.n_rows);
+        let mut E = Fr::alloc_vec(r1cs.A.n_rows);
 
         let num_iters = 10;
         for i in 0..num_iters {
@@ -537,27 +539,34 @@ pub mod tests {
             r1cs.check_relaxed_current_instance_relation(
                 &incoming_instance_w,
                 &incoming_committed_instance,
+                vec![Fr::zero(); r1cs.A.n_rows],
             )
             .unwrap();
 
             let r = Fr::rand(&mut rng); // folding challenge would come from the RO
 
             // NIFS.P
-            let (T, cmT) = NIFS::<Projective, Pedersen<Projective>>::compute_cmT(
+            let cmT = NIFS::<Projective, Pedersen<Projective>>::compute_cmT(
+                None,
                 &pedersen_params,
                 &r1cs,
                 &running_instance_w,
                 &running_committed_instance,
                 &incoming_instance_w,
                 &incoming_committed_instance,
+                &E,
+                &mut T,
             )
             .unwrap();
+            let cmT = ark_grumpkin::GrumpkinConfig::retrieve_msm_result(None, &cmT);
             let (folded_w, _) = NIFS::<Projective, Pedersen<Projective>>::fold_instances(
+                None,
                 r,
                 &running_instance_w,
                 &running_committed_instance,
                 &incoming_instance_w,
                 &incoming_committed_instance,
+                &mut E,
                 &T,
                 cmT,
             )
@@ -571,8 +580,12 @@ pub mod tests {
                 &cmT,
             );
 
-            r1cs.check_relaxed_running_instance_relation(&folded_w, &folded_committed_instance)
-                .unwrap();
+            r1cs.check_relaxed_running_instance_relation(
+                &folded_w,
+                &folded_committed_instance,
+                Fr::retrieve_e(&E),
+            )
+            .unwrap();
 
             // set running_instance for next loop iteration
             running_instance_w = folded_w;

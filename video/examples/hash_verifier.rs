@@ -3,10 +3,9 @@ use std::{path::Path, sync::Arc};
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
 use ark_std::{end_timer, start_timer, Zero};
-use ndarray::Array2;
 use rayon::prelude::*;
 use video::{
-    edit::constraints::{BrightnessCfg, EditConfig, MaskCfg, RemovingCfg},
+    edit::constraints::{EditConfig, RemovingCfg},
     encode::MacroblockType,
     griffin::{
         griffin::{Griffin, Permutation},

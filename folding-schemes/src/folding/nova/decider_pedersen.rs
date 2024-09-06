@@ -11,6 +11,7 @@ use ark_std::rand::{CryptoRng, RngCore};
 use ark_std::{One, Zero};
 use core::marker::PhantomData;
 
+
 use super::{
     circuits::CF2, nifs::NIFS, CurrentInstance, CycleFoldCommittedInstance, Nova, RunningInstance,
     IO_LEN,
@@ -38,17 +39,15 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace,
 use ark_std::log2;
 use core::borrow::Borrow;
 
+
 use super::circuits::ChallengeGadget;
 use crate::ccs::r1cs::R1CS;
-use crate::folding::circuits::nonnative::{
-    affine::nonnative_affine_to_field_elements, uint::NonNativeUintVar,
-};
+use crate::folding::circuits::nonnative::uint::NonNativeUintVar;
 use crate::folding::nova::{
     circuits::{CurrentInstanceVar, RunningInstanceVar, CF1},
     Witness,
 };
 use crate::transcript::{
-    poseidon::{PoseidonTranscript, PoseidonTranscriptVar},
     Transcript, TranscriptVar,
 };
 use crate::utils::{
@@ -149,12 +148,12 @@ pub struct WitnessVar<C: CurveGroup> {
     pub rW: FpVar<C::ScalarField>,
 }
 
-impl<C> AllocVar<Witness<C>, CF1<C>> for WitnessVar<C>
+impl<C> AllocVar<(Vec<CF1<C>>, Witness<C>), CF1<C>> for WitnessVar<C>
 where
     C: CurveGroup,
     <C as ark_ec::CurveGroup>::BaseField: PrimeField,
 {
-    fn new_variable<T: Borrow<Witness<C>>>(
+    fn new_variable<T: Borrow<(Vec<CF1<C>>, Witness<C>)>>(
         cs: impl Into<Namespace<CF1<C>>>,
         f: impl FnOnce() -> Result<T, SynthesisError>,
         mode: AllocationMode,
@@ -162,20 +161,21 @@ where
         f().and_then(|val| {
             let cs = cs.into();
 
-            let E: Vec<FpVar<C::ScalarField>> =
-                Vec::new_variable(cs.clone(), || Ok(val.borrow().E.clone()), mode)?;
-            let rE =
-                FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(val.borrow().rE), mode)?;
+            let v = val.borrow();
+            let (e, w) = v;
 
-            let Q: Vec<FpVar<C::ScalarField>> =
-                Vec::new_variable(cs.clone(), || Ok(val.borrow().q().to_vec()), mode)?;
-            let rQ =
-                FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(val.borrow().rQ), mode)?;
+            let E: Vec<FpVar<C::ScalarField>> = Vec::new_variable(cs.clone(), || Ok(&e[..]), mode)?;
+            let rE = FpVar::<C::ScalarField>::new_variable(
+                cs.clone(),
+                || Ok(C::ScalarField::zero()),
+                mode,
+            )?;
 
-            let W: Vec<FpVar<C::ScalarField>> =
-                Vec::new_variable(cs.clone(), || Ok(val.borrow().w().to_vec()), mode)?;
-            let rW =
-                FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(val.borrow().rW), mode)?;
+            let Q: Vec<FpVar<C::ScalarField>> = Vec::new_variable(cs.clone(), || Ok(w.q()), mode)?;
+            let rQ = FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(w.rQ), mode)?;
+
+            let W: Vec<FpVar<C::ScalarField>> = Vec::new_variable(cs.clone(), || Ok(w.w()), mode)?;
+            let rW = FpVar::<C::ScalarField>::new_variable(cs.clone(), || Ok(w.rW), mode)?;
 
             Ok(Self {
                 E,
@@ -199,12 +199,12 @@ pub struct CycleFoldWitnessVar<C: CurveGroup> {
     pub rW: NonNativeUintVar<CF2<C>>,
 }
 
-impl<C> AllocVar<Witness<C>, CF2<C>> for CycleFoldWitnessVar<C>
+impl<C> AllocVar<(Vec<CF1<C>>, Witness<C>), CF2<C>> for CycleFoldWitnessVar<C>
 where
     C: CurveGroup,
     <C as ark_ec::CurveGroup>::BaseField: PrimeField,
 {
-    fn new_variable<T: Borrow<Witness<C>>>(
+    fn new_variable<T: Borrow<(Vec<CF1<C>>, Witness<C>)>>(
         cs: impl Into<Namespace<CF2<C>>>,
         f: impl FnOnce() -> Result<T, SynthesisError>,
         mode: AllocationMode,
@@ -212,13 +212,16 @@ where
         f().and_then(|val| {
             let cs = cs.into();
 
-            let E = Vec::new_variable(cs.clone(), || Ok(val.borrow().E.clone()), mode)?;
-            let rE = NonNativeUintVar::new_variable(cs.clone(), || Ok(val.borrow().rE), mode)?;
+            let v = val.borrow();
+            let (e, w) = v;
 
-            assert_eq!(val.borrow().Q_len, 0);
+            let E = Vec::new_variable(cs.clone(), || Ok(&e[..]), mode)?;
+            let rE = NonNativeUintVar::new_variable(cs.clone(), || Ok(C::BaseField::zero()), mode)?;
 
-            let W = Vec::new_variable(cs.clone(), || Ok(val.borrow().QW.clone()), mode)?;
-            let rW = NonNativeUintVar::new_variable(cs.clone(), || Ok(val.borrow().rW), mode)?;
+            assert_eq!(w.Q_len, 0);
+
+            let W = Vec::new_variable(cs.clone(), || Ok(&w.QW[..]), mode)?;
+            let rW = NonNativeUintVar::new_variable(cs.clone(), || Ok(w.rW), mode)?;
 
             Ok(Self { E, rE, W, rW })
         })
@@ -274,6 +277,8 @@ where
     /// CycleFold running instance
     pub cf_U_i: Option<CycleFoldCommittedInstance<C2>>,
     pub cf_W_i: Option<Witness<C2>>,
+    pub E: Option<Vec<C1::ScalarField>>,
+    pub cf_E: Option<Vec<C2::ScalarField>>,
 }
 impl<C1, GC1, C2, GC2, CS1, CS2> DeciderEthCircuit<C1, GC1, C2, GC2, CS1, CS2>
 where
@@ -283,36 +288,52 @@ where
     C2::Config: MSM<C2>,
     GC1: CurveVar<C1, CF2<C1>> + ToConstraintFieldGadget<CF2<C1>>,
     GC2: CurveVar<C2, CF2<C2>> + ToConstraintFieldGadget<CF2<C2>>,
-    CS1: CommitmentScheme<C1>,
+    CS1: CommitmentScheme<C1, ProverParams = PedersenParams<C1>>,
     // enforce that the CS2 is Pedersen commitment scheme, since we're at Ethereum's EVM decider
     CS2: CommitmentScheme<C2, ProverParams = PedersenParams<C2>>,
     C1::ScalarField: Absorb + MVM,
+    C2::ScalarField: Absorb + MVM,
     <C1 as CurveGroup>::BaseField: PrimeField,
 {
     pub fn from_nova<FC: FCircuit<C1::ScalarField>>(
-        nova: &Nova<C1, GC1, C2, GC2, FC, CS1, CS2>,
+        nova: &mut Nova<C1, GC1, C2, GC2, FC, CS1, CS2>,
         (pp, vp): (ProverParams<C1, C2, CS1, CS2>, VerifierParams<C1, C2>),
     ) -> Result<Self, Error> {
         // compute the U_{i+1}, W_{i+1}
-        let (T, cmT) = NIFS::<C1, CS1>::compute_cmT(
+        let cmT = NIFS::<C1, CS1>::compute_cmT(
+            Some(&nova.stream),
             &pp.cs_params,
             &vp.r1cs,
-            &nova.W_i.clone(),
-            &nova.U_i.clone(),
-            &nova.w_i.clone(),
-            &nova.u_i.clone(),
+            &nova.W_i,
+            &nova.U_i,
+            &nova.w_i,
+            &nova.u_i,
+            &nova.E,
+            &mut nova.T,
         )?;
-        let r_bits = ChallengeGadget::<C1>::get_challenge_native(
+        let (r_bits, cmT) = ChallengeGadget::<C1>::get_challenge_device(
+            Some(&nova.stream),
+            Some(&nova.stream3),
             &nova.poseidon_config,
             &nova.U_i,
-            &nova.u_i,
-            cmT,
+            &mut nova.u_i,
+            &cmT,
+            &nova.cmW,
         )?;
         let r_Fr = C1::ScalarField::from_bigint(BigInteger::from_bits_le(&r_bits))
             .ok_or(Error::OutOfBounds)?;
         let (W_i1, U_i1) = NIFS::<C1, CS1>::fold_instances(
-            r_Fr, &nova.W_i, &nova.U_i, &nova.w_i, &nova.u_i, &T, cmT,
+            Some(&nova.stream),
+            r_Fr,
+            &nova.W_i,
+            &nova.U_i,
+            &nova.w_i,
+            &nova.u_i,
+            &mut nova.E,
+            &nova.T,
+            cmT,
         )?;
+        nova.stream.synchronize().unwrap();
 
         Ok(Self {
             _c1: PhantomData,
@@ -322,8 +343,8 @@ where
             _cs1: PhantomData,
             _cs2: PhantomData,
 
-            E_len: nova.W_i.E.len(),
-            cf_E_len: nova.cf_W_i.E.len(),
+            E_len: vp.r1cs.A.n_rows,
+            cf_E_len: vp.cf_r1cs.A.n_rows,
             r1cs: vp.r1cs,
             cf_r1cs: vp.cf_r1cs,
             cf_pedersen_params: pp.cf_cs_params,
@@ -341,6 +362,8 @@ where
             r: Some(r_Fr),
             cf_U_i: Some(nova.cf_U_i.clone()),
             cf_W_i: Some(nova.cf_W_i.clone()),
+            E: Some(C1::ScalarField::retrieve_e(&nova.E)),
+            cf_E: Some(C2::ScalarField::retrieve_e(&nova.cf_E)),
         })
     }
 }
@@ -393,12 +416,11 @@ where
         let U_i1 = RunningInstanceVar::<C1>::new_input(cs.clone(), || {
             Ok(self.U_i1.unwrap_or(RunningInstance::dummy(IO_LEN)))
         })?;
-        let W_i1_Q: Vec<FpVar<C1::ScalarField>> =
-            Vec::new_committed(cs.clone(), || Ok(W_i1.q().clone()))?;
-        let W_i1_W: Vec<FpVar<C1::ScalarField>> =
-            Vec::new_committed(cs.clone(), || Ok(W_i1.w().clone()))?;
-        let W_i1_E: Vec<FpVar<C1::ScalarField>> =
-            Vec::new_committed(cs.clone(), || Ok(W_i1.E.clone()))?;
+        let W_i1_Q: Vec<FpVar<C1::ScalarField>> = Vec::new_committed(cs.clone(), || Ok(W_i1.q()))?;
+        let W_i1_W: Vec<FpVar<C1::ScalarField>> = Vec::new_committed(cs.clone(), || Ok(W_i1.w()))?;
+        let W_i1_E: Vec<FpVar<C1::ScalarField>> = Vec::new_committed(cs.clone(), || {
+            Ok(self.E.unwrap_or(vec![C1::ScalarField::zero(); self.E_len]))
+        })?;
 
         let crh_params = CRHParametersVar::<C1::ScalarField>::new_constant(
             cs.clone(),
@@ -456,7 +478,11 @@ where
                 Ok(self.cf_U_i.unwrap_or_else(|| cf_u_dummy_native.clone()))
             })?;
             let cf_W_i = CycleFoldWitnessVar::<C2>::new_witness(cs.clone(), || {
-                Ok(self.cf_W_i.unwrap_or(w_dummy_native.clone()))
+                Ok((
+                    self.cf_E
+                        .unwrap_or(vec![C2::ScalarField::zero(); self.cf_E_len]),
+                    self.cf_W_i.unwrap_or(w_dummy_native.clone()),
+                ))
             })?;
 
             // 3.b u_i.x[1] == H(cf_U_i)
@@ -726,12 +752,11 @@ pub mod tests {
         // generate a Nova instance and do a step of it
         let mut nova = NOVA::init(&params, F_circuit, z_0.clone()).unwrap();
         nova.prove_step(&params, &()).unwrap();
-        let ivc_v = nova.clone();
-        let (running_instance, incoming_instance, cyclefold_instance) = ivc_v.instances();
+        let (running_instance, incoming_instance, cyclefold_instance) = nova.instances();
         NOVA::verify(
             &params.1,
             z_0,
-            ivc_v.z_i,
+            nova.z_i.clone(),
             Fr::one(),
             running_instance,
             incoming_instance,
@@ -747,7 +772,7 @@ pub mod tests {
             GVar2,
             Pedersen<Projective>,
             Pedersen<Projective2>,
-        >::from_nova(&nova, params)
+        >::from_nova(&mut nova, params)
         .unwrap();
 
         let cs = ConstraintSystem::<Fr>::new_ref();
@@ -841,7 +866,7 @@ pub mod tests {
             GVar2,
             Pedersen<Projective>,
             Pedersen<Projective2>,
-        >::from_nova::<CubicFCircuit<Fr>>(&nova, params)
+        >::from_nova::<CubicFCircuit<Fr>>(&mut nova, params)
         .unwrap();
         let mut rng = rand::rngs::OsRng;
 

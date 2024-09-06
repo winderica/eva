@@ -2,19 +2,17 @@ use std::borrow::Borrow;
 
 use ark_ff::PrimeField;
 use ark_r1cs_std::{
-    alloc::AllocVar,
-    boolean::Boolean,
-    fields::{fp::FpVar, FieldVar},
+    alloc::AllocVar
+    ,
+    fields::FieldVar,
 };
-use ark_relations::r1cs::SynthesisError;
-use ndarray::Array2;
 
 pub mod constraints;
 
-use crate::encode::{constraints::MatrixVar, Matrix};
+use crate::encode::Matrix;
 
-impl<const M: usize, const N: usize> Matrix<M, N> {
-    pub fn invert_color(&self) -> Matrix<M, N> {
+impl<const M: usize, const N: usize> Matrix<u8, M, N> {
+    pub fn invert_color(&self) -> Matrix<u8, M, N> {
         let mut inverted = self.clone();
         for i in 0..M {
             for j in 0..N {

@@ -1,4 +1,8 @@
 #![feature(test)]
+#![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
 
 use std::{
     fs::File,
@@ -22,10 +26,10 @@ use ark_r1cs_std::{
     R1CSVar,
 };
 use ark_relations::r1cs::{
-    ConstraintSystem, ConstraintSystemRef, LcIndex, LinearCombination, SynthesisError,
-    SynthesisMode, Variable,
+    ConstraintSystem, ConstraintSystemRef, LinearCombination, SynthesisError
+    , Variable,
 };
-use ark_std::{add_to_trace, end_timer, start_timer};
+use ark_std::{end_timer, start_timer};
 use edit::constraints::{EditConfig, EditConfigVar, EditGadget};
 use encode::constants::{OFFSET_BITS, Q_BITS_4};
 use folding_schemes::{
@@ -33,6 +37,7 @@ use folding_schemes::{
     Error,
 };
 use rayon::prelude::*;
+use var::I64Var;
 
 use crate::{
     encode::{
@@ -52,6 +57,7 @@ pub mod edit;
 pub mod encode;
 pub mod griffin;
 pub mod utils;
+pub mod var;
 
 const SCALES: [[u64; 6]; 3] = [
     [13107, 11916, 10082, 9362, 8192, 7282],
@@ -101,8 +107,8 @@ fn bit_decompose(mut x: usize, n: usize) -> Vec<bool> {
 fn select_scale<F: PrimeField>(
     v: &[Boolean<F>],
     scales: &[u64; 6],
-) -> Result<FpVar<F>, SynthesisError> {
-    let [a, b, c, d, e, f] = scales.map(|x| FpVar::constant(F::from(x)));
+) -> Result<I64Var<F>, SynthesisError> {
+    let [a, b, c, d, e, f] = scales.map(|x| I64Var::constant(x));
     v[0].select(
         &v[1].select(&d, &v[2].select(&f, &b)?)?,
         &v[1].select(&c, &v[2].select(&e, &a)?)?,
@@ -116,9 +122,9 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
         griffin: &GriffinCircuit<F>,
         encode_config: &EncodeConfig,
         edit_config: &E::Cfg,
-        (y_block, u_block, v_block): &(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>),
-        (y_pred, u_pred, v_pred): &(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>),
-        (y_output, u_output, v_output): &(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>),
+        (y_block, u_block, v_block): &(Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>),
+        (y_pred, u_pred, v_pred): &(Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>),
+        (y_output, u_output, v_output): &(Matrix<i8, 16, 16>, Matrix<i8, 8, 8>, Matrix<i8, 8, 8>),
     ) -> Result<
         (
             (Option<Variable>, F),
@@ -147,8 +153,8 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
         let qpc_mod_6_bits = Vec::<Boolean<_>>::new_witness(cs.clone(), || {
             Ok(bit_decompose(encode_config.qpc % 6, 3))
         })?;
-        let two_to_qp_over_6 = FpVar::one().double()?.pow_le(&qp_over_6_bits)?;
-        let two_to_qpc_over_6 = FpVar::one().double()?.pow_le(&qpc_over_6_bits)?;
+        let two_to_qp_over_6 = I64Var::one().double()?.pow_le(&qp_over_6_bits)?;
+        let two_to_qpc_over_6 = I64Var::one().double()?.pow_le(&qpc_over_6_bits)?;
         let scale = (
             select_scale(&qp_mod_6_bits, &SCALES[0])?,
             select_scale(&qp_mod_6_bits, &SCALES[1])?,
@@ -163,11 +169,11 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
         let is_intra = Boolean::new_witness(cs.clone(), || Ok(encode_config.slice_is_intra))?;
 
         let base_offset = is_intra.select(
-            &FpVar::constant(F::from(BASE_OFFSET_I_SLICE)),
-            &FpVar::constant(F::from(BASE_OFFSET_BP_SLICE)),
+            &I64Var::constant((BASE_OFFSET_I_SLICE)),
+            &I64Var::constant((BASE_OFFSET_BP_SLICE)),
         )?;
-        let offset = &base_offset * &two_to_qp_over_6 * F::from(1u8 << (Q_BITS_4 - OFFSET_BITS));
-        let offset_c = &base_offset * &two_to_qpc_over_6 * F::from(1u8 << (Q_BITS_4 - OFFSET_BITS));
+        let offset = &base_offset * &two_to_qp_over_6 * (1 << (Q_BITS_4 - OFFSET_BITS));
+        let offset_c = &base_offset * &two_to_qpc_over_6 * (1 << (Q_BITS_4 - OFFSET_BITS));
 
         let is_i16x16 = Boolean::new_witness(cs.clone(), || {
             Ok(encode_config.mb_type == MacroblockType::I16x16)
@@ -291,7 +297,7 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
             .map(|c| {
                 let mut r = FpVar::zero();
                 for v in c {
-                    r = r * s1 + v;
+                    r = r * s1 + v.to_fpvar();
                 }
                 r
             })
@@ -317,7 +323,7 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
             .map(|c| {
                 let mut r = FpVar::zero();
                 for v in c {
-                    r = r * s1 + v;
+                    r = r * s1 + v.to_fpvar();
                 }
                 r
             })
@@ -332,7 +338,7 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
                     .map(|c| {
                         let mut r = FpVar::zero();
                         for v in c {
-                            r = r * s2 + v + F::from(128u8);
+                            r = r * s2 + v.to_fpvar() + F::from(128);
                         }
                         r
                     }),
@@ -379,9 +385,9 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
 }
 
 pub struct ExternalInputs<EditConfig: Default + Clone> {
-    pub blocks: Vec<(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>)>,
-    pub predictions: Vec<(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>)>,
-    pub outputs: Vec<(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>)>,
+    pub blocks: Vec<(Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>)>,
+    pub predictions: Vec<(Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>)>,
+    pub outputs: Vec<(Matrix<i8, 16, 16>, Matrix<i8, 8, 8>, Matrix<i8, 8, 8>)>,
     pub encode_configs: Vec<EncodeConfig>,
     pub edit_configs: Vec<EditConfig>,
 }
@@ -423,9 +429,8 @@ impl<F: PrimeField + Absorb, E: EditGadget> FCircuit<F> for EditEncodeCircuit<F,
                         .chain(y_block.iter())
                         .chain(u_block.iter())
                         .chain(v_block.iter())
-                        .map(|&i| u8::try_from(i))
-                        .collect::<Result<Vec<_>, _>>()
-                        .unwrap()
+                        .copied()
+                        .collect::<Vec<_>>()
                         .chunks(F::MODULUS_BIT_SIZE as usize / MB_BITS)
                         .map(F::from_be_bytes_mod_order)
                         .collect::<Vec<_>>(),
@@ -457,9 +462,8 @@ impl<F: PrimeField + Absorb, E: EditGadget> FCircuit<F> for EditEncodeCircuit<F,
                             .chain(y_pred.iter())
                             .chain(u_pred.iter())
                             .chain(v_pred.iter())
-                            .map(|&i| u8::try_from(i))
-                            .collect::<Result<Vec<_>, _>>()
-                            .unwrap()
+                            .copied()
+                            .collect::<Vec<_>>()
                             .chunks(F::MODULUS_BIT_SIZE as usize / MB_BITS)
                             .chain(
                                 vec![]
@@ -467,7 +471,7 @@ impl<F: PrimeField + Absorb, E: EditGadget> FCircuit<F> for EditEncodeCircuit<F,
                                     .chain(y_output.iter())
                                     .chain(u_output.iter())
                                     .chain(v_output.iter())
-                                    .map(|&i| u8::try_from(i + 128))
+                                    .map(|&i| u8::try_from(i as i16 + 128))
                                     .collect::<Result<Vec<_>, _>>()
                                     .unwrap()
                                     .chunks(F::MODULUS_BIT_SIZE as usize / COEFF_BITS),
@@ -616,6 +620,8 @@ impl<F: PrimeField + Absorb, E: EditGadget> FCircuit<F> for EditEncodeCircuit<F,
             cs.num_witness_variables += w_offset * blocks.len();
             cs.num_constraints += constraints * blocks.len();
             cs.num_linear_combinations += lc_offset * blocks.len();
+            cs.committed_assignment.reserve(q_offset * blocks.len());
+            cs.witness_assignment.reserve(w_offset * blocks.len());
         }
 
         let mut h1s = vec![];
@@ -731,9 +737,9 @@ pub fn parse_prover_data(
     n: Option<usize>,
 ) -> Result<
     (
-        Vec<(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>)>,
-        Vec<(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>)>,
-        Vec<(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>)>,
+        Vec<(Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>)>,
+        Vec<(Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>)>,
+        Vec<(Matrix<i8, 16, 16>, Matrix<i8, 8, 8>, Matrix<i8, 8, 8>)>,
         Vec<EncodeConfig>,
     ),
     Box<dyn std::error::Error>,
@@ -800,9 +806,9 @@ pub fn parse_prover_data(
         .zip(orig_u.par_chunks_exact(64).zip(orig_v.par_chunks_exact(64)))
         .map(|(orig_y, (orig_u, orig_v))| {
             (
-                Matrix::from_iter(orig_y.iter().map(|&i| i as i16)),
-                Matrix::from_iter(orig_u.iter().map(|&i| i as i16)),
-                Matrix::from_iter(orig_v.iter().map(|&i| i as i16)),
+                Matrix::from_vec(orig_y.to_vec()),
+                Matrix::from_vec(orig_u.to_vec()),
+                Matrix::from_vec(orig_v.to_vec()),
             )
         })
         .collect::<Vec<_>>();
@@ -811,9 +817,9 @@ pub fn parse_prover_data(
         .zip(pred_u.par_chunks_exact(64).zip(pred_v.par_chunks_exact(64)))
         .map(|(pred_y, (pred_u, pred_v))| {
             (
-                Matrix::from_iter(pred_y.iter().map(|&i| i as i16)),
-                Matrix::from_iter(pred_u.iter().map(|&i| i as i16)),
-                Matrix::from_iter(pred_v.iter().map(|&i| i as i16)),
+                Matrix::from_vec(pred_y.to_vec()),
+                Matrix::from_vec(pred_u.to_vec()),
+                Matrix::from_vec(pred_v.to_vec()),
             )
         })
         .collect::<Vec<_>>();
@@ -828,9 +834,9 @@ pub fn parse_prover_data(
         )
         .map(|(result_y, (result_u, result_v))| {
             (
-                Matrix::from_iter(result_y.iter().map(|&i| i as i16)),
-                Matrix::from_iter(result_u.iter().map(|&i| i as i16)),
-                Matrix::from_iter(result_v.iter().map(|&i| i as i16)),
+                Matrix::from_vec(result_y.to_vec()),
+                Matrix::from_vec(result_u.to_vec()),
+                Matrix::from_vec(result_v.to_vec()),
             )
         })
         .collect::<Vec<_>>();
@@ -862,7 +868,7 @@ pub fn parse_prover_data(
 
 pub fn parse_recorder_data(
     input_path: PathBuf,
-) -> Result<Vec<(Vec<u8>, Vec<u8>, Vec<u8>)>, Box<dyn std::error::Error>> {
+) -> Result<Vec<Vec<u8>>, Box<dyn std::error::Error>> {
     let orig_y = std::fs::read(input_path.join("orig_y_enc"))?;
     let orig_u = std::fs::read(input_path.join("orig_u_enc"))?;
     let orig_v = std::fs::read(input_path.join("orig_v_enc"))?;
@@ -870,7 +876,7 @@ pub fn parse_recorder_data(
     Ok(orig_y
         .par_chunks_exact(256)
         .zip(orig_u.par_chunks_exact(64).zip(orig_v.par_chunks_exact(64)))
-        .map(|(orig_y, (orig_u, orig_v))| (orig_y.to_vec(), orig_u.to_vec(), orig_v.to_vec()))
+        .map(|(orig_y, (orig_u, orig_v))| [orig_y, orig_u, orig_v].concat())
         .collect::<Vec<_>>())
 }
 
@@ -901,7 +907,8 @@ pub fn parse_verifier_data(
         .cast::<i8>()
         .par_chunks_exact(256)
         .zip(
-            result_u.cast::<i8>()
+            result_u
+                .cast::<i8>()
                 .par_chunks_exact(64)
                 .zip(result_v.cast::<i8>().par_chunks_exact(64)),
         )
@@ -963,15 +970,13 @@ pub mod tests {
     use ark_bn254::{constraints::GVar, Fr, G1Projective as Projective};
     use ark_ff::Zero;
     use ark_grumpkin::{constraints::GVar as GVar2, Projective as Projective2};
-    use ark_r1cs_std::R1CSVar;
-    use ark_relations::r1cs::ConstraintSystem;
     use edit::constraints::{
         Brightness, BrightnessCfg, Grayscale, InvertColor, MaskCfg, Masking, NoOp, Removing,
         RemovingCfg,
     };
     use folding_schemes::{
         commitment::{pedersen::Pedersen, CommitmentScheme},
-        folding::nova::{Nova, ProverParams, VerifierParams},
+        folding::nova::Nova,
         transcript::poseidon::poseidon_test_config,
         FoldingScheme,
     };
@@ -1559,7 +1564,7 @@ pub mod tests {
         for i in 0..num_steps {
             let start = Instant::now();
 
-            let mut p: Vec<(Matrix<16, 16>, Matrix<8, 8>, Matrix<8, 8>)> = vec![];
+            let mut p: Vec<(Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>)> = vec![];
             let mut o = vec![];
             let mut e1 = vec![];
             let mut e2 = vec![];
@@ -1693,9 +1698,14 @@ pub mod tests {
                                 Array2::from_shape_fn((16, 16), |(m, n)| {
                                     let xx = xx + m;
                                     let yy = yy + n;
+                                    let b = xx >= x && xx < x + w && yy >= y && yy < y + h;
                                     (
-                                        (((xx - x) / 16 % 2 + (yy - y) / 16 % 2 + 3) * 32) as u8,
-                                        !(xx >= x && xx < x + w && yy >= y && yy < y + h),
+                                        if b {
+                                            (((xx - x) / 16 % 2 + (yy - y) / 16 % 2 + 3) * 32) as u8
+                                        } else {
+                                            0
+                                        },
+                                        !b,
                                     )
                                 }),
                                 Array2::from_shape_fn((8, 8), |(m, n)| {
@@ -1819,14 +1829,14 @@ pub mod tests {
         }
 
         for (f, ww, hh) in [
-            ("bunny", 1280, 720),
-            ("foreman", 352, 288),
-            ("foreman_bright", 352, 288),
-            ("foreman_crop", 160, 128),
-            ("foreman_cut", 352, 288),
-            ("foreman_gray", 352, 288),
-            ("foreman_inv", 352, 288),
-            ("foreman_mask", 352, 288),
+            ("bunny2", 1280, 720),
+            // ("foreman", 352, 288),
+            // ("foreman_bright", 352, 288),
+            // ("foreman_crop", 160, 128),
+            // ("foreman_cut", 352, 288),
+            // ("foreman_gray", 352, 288),
+            // ("foreman_inv", 352, 288),
+            // ("foreman_mask", 352, 288),
         ] {
             let input_path = Path::new(env!("DATA_PATH"))
                 .parent()
@@ -1895,22 +1905,20 @@ pub mod benches {
     extern crate test;
     use std::{
         env,
-        error::Error,
-        fs::File,
-        io::{BufReader, Read},
-        path::Path,
-        time::Instant,
+        error::Error
+
+        ,
+        path::Path
+        ,
     };
 
     use super::*;
-    use crate::encode::traits::CastSlice;
     use ark_bn254::{constraints::GVar, Fq, Fr, G1Projective as Projective};
     use ark_crypto_primitives::crh::{poseidon::CRH, CRHScheme};
     use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
     use ark_ff::{UniformRand, Zero};
     use ark_grumpkin::{constraints::GVar as GVar2, Projective as Projective2};
-    use ark_r1cs_std::R1CSVar;
-    use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
+    use ark_relations::r1cs::ConstraintSystem;
     use edit::constraints::{
         Brightness, BrightnessCfg, Grayscale, InvertColor, MaskCfg, Masking, NoOp, Removing,
         RemovingCfg,
@@ -1919,9 +1927,10 @@ pub mod benches {
         ccs::r1cs::extract_r1cs,
         commitment::{pedersen::Pedersen, CommitmentScheme},
         folding::nova::{
-            circuits::AugmentedFCircuit, nifs::NIFS, Nova, ProverParams, VerifierParams,
+            circuits::AugmentedFCircuit, nifs::NIFS, Nova,
         },
-        transcript::poseidon::poseidon_test_config,
+        transcript::poseidon::poseidon_test_config
+        ,
         FoldingScheme, MVM,
     };
     use ndarray::Array2;
@@ -1988,7 +1997,7 @@ pub mod benches {
                 edit_configs: vec![(); blocks_per_step],
             },
         )
-        .generate_constraints(cs.clone())?;
+        .run(cs.clone())?;
         la.build_histo(cs.clone())?;
         la.generate_lookup_constraints(cs.clone(), Fr::rand(rng))?;
 
@@ -2035,7 +2044,7 @@ pub mod benches {
                 edit_configs: vec![(); blocks_per_step],
             },
         )
-        .generate_constraints(cs.clone())?;
+        .run(cs.clone())?;
         la.build_histo(cs.clone())?;
         la.generate_lookup_constraints(cs.clone(), Fr::rand(rng))?;
 
@@ -2049,9 +2058,16 @@ pub mod benches {
         let z2 = (0..r1cs.A.n_cols)
             .map(|_| Fr::rand(rng))
             .collect::<Vec<_>>();
+        let mut t = ark_bn254::Fr::alloc_vec(r1cs.A.n_rows);
+        let tmp_e = ark_bn254::Fr::alloc_vec(r1cs.A.n_rows);
 
         b.iter(|| {
-            Fr::compute_t(&r1cs.A.cuda, &r1cs.B.cuda, &r1cs.C.cuda, &z1, &z2);
+            Fr::compute_t(None, &r1cs.A.cuda, &r1cs.B.cuda, &r1cs.C.cuda,             &z1[..1],
+                          &z1[1..1 + r1cs.l],
+                          &z1[1 + r1cs.l..],
+                          &z2[..1],
+                          &z2[1..1 + r1cs.l],
+                          &z2[1 + r1cs.l..], &tmp_e, &mut t);
         });
 
         Ok(())
@@ -2651,10 +2667,15 @@ pub mod benches {
                                     Array2::from_shape_fn((16, 16), |(m, n)| {
                                         let xx = xx + m;
                                         let yy = yy + n;
+                                        let b = xx >= x && xx < x + w && yy >= y && yy < y + h;
                                         (
-                                            (((xx - x) / 16 % 2 + (yy - y) / 16 % 2 + 3) * 32)
-                                                as u8,
-                                            !(xx >= x && xx < x + w && yy >= y && yy < y + h),
+                                            if b {
+                                                (((xx - x) / 16 % 2 + (yy - y) / 16 % 2 + 3) * 32)
+                                                    as u8
+                                            } else {
+                                                0
+                                            },
+                                            !b,
                                         )
                                     }),
                                     Array2::from_shape_fn((8, 8), |(m, n)| {

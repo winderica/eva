@@ -6,19 +6,9 @@ members = [
 resolver = "2"
 
 [patch.crates-io]
-ark-ff = { git = "https://github.com/arkworks-rs/algebra/" }
-ark-ec = { git = "https://github.com/arkworks-rs/algebra/" }
-ark-serialize = { git = "https://github.com/arkworks-rs/algebra/" }
-ark-std = { git = "https://github.com/arkworks-rs/std/" }
-ark-poly-commit = { git = "https://github.com/arkworks-rs/poly-commit/" }
-ark-r1cs-std = { git = "https://github.com/winderica/r1cs-std/", branch = "experimental" }
-ark-bn254 = { git = "https://github.com/arkworks-rs/algebra/" }
-ark-grumpkin = { git = "https://github.com/arkworks-rs/algebra/" }
-ark-pallas = { git = "https://github.com/arkworks-rs/algebra/" }
-ark-vesta = { git = "https://github.com/arkworks-rs/algebra/" }
-ark-groth16 = { git = "https://github.com/winderica/groth16/", rev = "51229b" }
-ark-relations = { git = "https://github.com/winderica/snark/", branch = "experimental" }
-ark-crypto-primitives = { git = "https://github.com/arkworks-rs/crypto-primitives/" }
+ark-groth16 = { git = "https://github.com/winderica/groth16", branch = "experimental" }
+ark-relations = { git = "https://github.com/winderica/snark", branch = "experimental" }
+ark-r1cs-std = { git = "https://github.com/winderica/r1cs-std", branch = "experimental" }
 
 [profile.test]
 opt-level = 3

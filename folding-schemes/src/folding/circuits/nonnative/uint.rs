@@ -407,7 +407,7 @@ impl<F: PrimeField> NonNativeUintVar<F> {
                 let mut yy = LimbVar::zero();
                 while j < len {
                     let shift = BigUint::one() << (Self::bits_per_limb() * (j - i));
-                    assert!(shift < F::MODULUS_MINUS_ONE_DIV_TWO.into());
+                    debug_assert!(shift < F::MODULUS_MINUS_ONE_DIV_TWO.into());
                     let shift = LimbVar::constant(shift.into());
                     match (
                         // Try to group `x` and `y` into `xx` and `yy`.
@@ -547,12 +547,16 @@ impl<F: PrimeField> NonNativeUintVar<F> {
 
         let bits = &x.value().unwrap_or_default().into_bigint().to_bits_le()[..length];
         let bits = if cs.is_none() {
-            Vec::new_constant(cs, bits)?
+            Vec::new_constant(cs.clone(), bits)?
         } else {
-            Vec::new_witness(cs, || Ok(bits))?
+            Vec::new_witness(cs.clone(), || Ok(bits))?
         };
 
-        Boolean::le_bits_to_fp(&bits)?.enforce_equal(x)?;
+        if cs.should_construct_matrices() {
+            Boolean::le_bits_to_fp(&bits)?.enforce_equal(x)?;
+        } else if !cs.is_none() {
+            cs.borrow_mut().unwrap().num_constraints += 1;
+        }
 
         Ok(bits)
     }
@@ -610,7 +614,11 @@ impl<F: PrimeField> NonNativeUintVar<F> {
         //           `is_neg.select(&x.negate()?, &x)?` returns `x`, which is
         //           greater than `(|F| - 1) / 2` and cannot fit in `length`
         //           bits.
-        FpVar::from(is_neg).mul_equals(&x.double()?, &(x - Boolean::le_bits_to_fp(&bits)?))?;
+        if cs.should_construct_matrices() {
+            FpVar::from(is_neg).mul_equals(&x.double()?, &(x - Boolean::le_bits_to_fp(&bits)?))?;
+        } else if !cs.is_none() {
+            cs.borrow_mut().unwrap().num_constraints += 1;
+        }
 
         Ok(bits)
     }
@@ -676,35 +684,39 @@ impl<F: PrimeField> NonNativeUintVar<F> {
                 .collect::<Result<Vec<_>, _>>()?
         };
         for c in 1..=len {
-            let c = F::from(c as u64);
-            let mut t = F::one();
-            let mut c_powers = vec![];
-            for _ in 0..len {
-                c_powers.push(t);
-                t *= c;
+            if cs.should_construct_matrices() {
+                let c = F::from(c as u64);
+                let mut t = F::one();
+                let mut c_powers = vec![];
+                for _ in 0..len {
+                    c_powers.push(t);
+                    t *= c;
+                }
+                // `l = Σ self[i] c^i`
+                let l = self
+                    .0
+                    .iter()
+                    .zip(&c_powers)
+                    .map(|(v, t)| (&v.v * *t))
+                    .sum::<FpVar<_>>();
+                // `r = Σ other[i] c^i`
+                let r = other
+                    .0
+                    .iter()
+                    .zip(&c_powers)
+                    .map(|(v, t)| (&v.v * *t))
+                    .sum::<FpVar<_>>();
+                // `o = Σ z[i] c^i`
+                let o = z
+                    .iter()
+                    .zip(&c_powers)
+                    .map(|(v, t)| &v.v * *t)
+                    .sum::<FpVar<_>>();
+                // Enforce `o = l * r`
+                l.mul_equals(&r, &o)?;
+            } else {
+                cs.borrow_mut().unwrap().num_constraints += 1;
             }
-            // `l = Σ self[i] c^i`
-            let l = self
-                .0
-                .iter()
-                .zip(&c_powers)
-                .map(|(v, t)| (&v.v * *t))
-                .sum::<FpVar<_>>();
-            // `r = Σ other[i] c^i`
-            let r = other
-                .0
-                .iter()
-                .zip(&c_powers)
-                .map(|(v, t)| (&v.v * *t))
-                .sum::<FpVar<_>>();
-            // `o = Σ z[i] c^i`
-            let o = z
-                .iter()
-                .zip(&c_powers)
-                .map(|(v, t)| &v.v * *t)
-                .sum::<FpVar<_>>();
-            // Enforce `o = l * r`
-            l.mul_equals(&r, &o)?;
         }
 
         Ok(Self(z))

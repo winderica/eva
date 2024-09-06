@@ -33,6 +33,17 @@ impl<F: PrimeField> R1CS<F> {
         Ok(())
     }
 
+    /// check that a R1CS structure is satisfied by a z vector. Only for testing.
+    pub fn eval_relation(&self, z: &[F]) -> Result<Vec<F>, Error> {
+        let Az = mat_vec_mul_sparse(&self.A, z)?;
+        let Bz = mat_vec_mul_sparse(&self.B, z)?;
+        let Cz = mat_vec_mul_sparse(&self.C, z)?;
+        let AzBz = hadamard(&Az, &Bz)?;
+        let uCz = vec_scalar_mul(&Cz, &z[0]);
+
+        Ok(vec_sub(&AzBz, &uCz)?)
+    }
+
     /// converts the R1CS instance into a RelaxedR1CS as described in
     /// [Nova](https://eprint.iacr.org/2021/370.pdf) section 4.1.
     pub fn relax(self) -> RelaxedR1CS<F> {
@@ -117,8 +128,8 @@ pub mod tests {
     use super::*;
     use crate::utils::vec::tests::{to_F_matrix, to_F_vec};
 
-    use ark_ff::PrimeField;
     use ark_bn254::Fr;
+    use ark_ff::PrimeField;
 
     pub fn get_test_r1cs<F: MVM>() -> R1CS<F> {
         // R1CS for: x^3 + x + 5 = y (example from article

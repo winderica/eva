@@ -6,6 +6,7 @@ use ark_crypto_primitives::crh::poseidon::CRH;
 use ark_crypto_primitives::crh::CRHScheme;
 use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
 use ark_groth16::Groth16;
+use ark_serialize::CanonicalSerialize;
 use ark_snark::SNARK;
 use ark_std::{add_to_trace, end_timer, start_timer};
 use rand::thread_rng;
@@ -92,6 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             r: None,
             cf_U_i: None,
             cf_W_i: None,
+            E: None,
+            cf_E: None,
             sigma: (Fr::rand(rng), Fq::rand(rng)),
             vk: Projective2::rand(rng),
             h1: Fr::rand(rng),
@@ -220,25 +223,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         };
 
+        let i = folding_scheme.i;
+        let z_0 = folding_scheme.z_0.clone();
+        let z_i = folding_scheme.z_i.clone();
+        let U_i = folding_scheme.U_i.clone();
+
         let circuit = DeciderEthCircuit::<Projective, GVar, Projective2, GVar2>::from_nova(
-            &folding_scheme,
+            folding_scheme,
             params,
             vk,
             sigma,
         )?;
 
-        (
-            circuit,
-            folding_scheme.i,
-            folding_scheme.z_0.clone(),
-            folding_scheme.z_i.clone(),
-            folding_scheme.U_i.clone(),
-            folding_scheme.u_i.clone(),
-        )
+        let u_i = circuit.u_i.clone().unwrap();
+
+        (circuit, i, z_0, z_i, U_i, u_i)
     };
 
     // decider proof generation
     let proof = Decider::prove(decider_pp, rng, circuit).unwrap();
+
+    let mut v = vec![];
+    decider_vp.serialize_compressed(&mut v).unwrap();
+    vk.serialize_compressed(&mut v).unwrap();
 
     // decider proof verification
     let start = start_timer!(|| "Verify");

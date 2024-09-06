@@ -1,4 +1,4 @@
-use std::borrow::{Borrow, BorrowMut};
+use std::borrow::Borrow;
 use std::ops::{Deref, Index, IndexMut};
 
 use ark_ff::{BigInteger, Field, One, PrimeField};
@@ -6,26 +6,51 @@ use ark_r1cs_std::alloc::{AllocVar, AllocationMode};
 use ark_r1cs_std::boolean::Boolean;
 use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
-use ark_r1cs_std::select::CondSelectGadget;
 use ark_r1cs_std::{fields::FieldVar, R1CSVar};
-use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
+use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
 use ark_std::iterable::Iterable;
-use ark_std::{add_to_trace, log2};
+use ark_std::log2;
 use folding_schemes::frontend::LookupArgumentRef;
-use ndarray::{s, Array, Array2};
+use ndarray::{s, Array2};
 use num_bigint::BigUint;
-use num_traits::cast::ToPrimitive;
+use num_traits::AsPrimitive;
 
+use crate::var::I64Var;
 use crate::COEFF_BITS;
 
-use super::{constants::*, MacroblockType, Matrix, QuantParam};
+use super::{constants::*, Matrix, QuantParam};
 
-pub struct QuantParamVar<F: PrimeField> {
-    offset: FpVar<F>,
-    scale: FpVar<F>,
+pub struct QuantParamVar<T> {
+    offset: T,
+    scale: T,
 }
 
-impl<F: PrimeField> AllocVar<QuantParam, F> for QuantParamVar<F> {
+impl<F: PrimeField> AllocVar<QuantParam, F> for QuantParamVar<I64Var<F>> {
+    fn new_variable<T: Borrow<QuantParam>>(
+        cs: impl Into<Namespace<F>>,
+        f: impl FnOnce() -> Result<T, SynthesisError>,
+        mode: AllocationMode,
+    ) -> Result<Self, SynthesisError> {
+        let ns = cs.into();
+        let cs = ns.cs();
+        let param = f()?;
+        let param = param.borrow();
+        let offset = I64Var::new_variable(cs.clone(), || Ok(param.offset), mode)?;
+        let scale = I64Var::new_variable(cs.clone(), || Ok(param.scale), mode)?;
+        Ok(Self { offset, scale })
+    }
+}
+
+impl<F: PrimeField> QuantParamVar<I64Var<F>> {
+    pub fn constant<T: Into<QuantParam>>(param: T) -> Self {
+        let param = param.into();
+        let offset = I64Var::constant(param.offset);
+        let scale = I64Var::constant(param.scale);
+        Self { offset, scale }
+    }
+}
+
+impl<F: PrimeField> AllocVar<QuantParam, F> for QuantParamVar<FpVar<F>> {
     fn new_variable<T: Borrow<QuantParam>>(
         cs: impl Into<Namespace<F>>,
         f: impl FnOnce() -> Result<T, SynthesisError>,
@@ -41,7 +66,7 @@ impl<F: PrimeField> AllocVar<QuantParam, F> for QuantParamVar<F> {
     }
 }
 
-impl<F: PrimeField> QuantParamVar<F> {
+impl<F: PrimeField> QuantParamVar<FpVar<F>> {
     pub fn constant<T: Into<QuantParam>>(param: T) -> Self {
         let param = param.into();
         let offset = FpVar::constant(F::from(param.offset));
@@ -81,10 +106,10 @@ impl<T, const M: usize, const N: usize> FromIterator<T> for MatrixVar<T, M, N> {
     }
 }
 
-impl<F: PrimeField, const M: usize, const N: usize> AllocVar<Matrix<M, N>, F>
+impl<S: Copy, F: PrimeField + From<S>, const M: usize, const N: usize> AllocVar<Matrix<S, M, N>, F>
     for MatrixVar<FpVar<F>, M, N>
 {
-    fn new_variable<T: Borrow<Matrix<M, N>>>(
+    fn new_variable<T: Borrow<Matrix<S, M, N>>>(
         cs: impl Into<Namespace<F>>,
         f: impl FnOnce() -> Result<T, SynthesisError>,
         mode: AllocationMode,
@@ -95,6 +120,24 @@ impl<F: PrimeField, const M: usize, const N: usize> AllocVar<Matrix<M, N>, F>
             .borrow()
             .iter()
             .map(|&v| FpVar::new_variable(cs.clone(), || Ok(F::from(v)), mode))
+            .collect()
+    }
+}
+
+impl<S: Copy + AsPrimitive<i64>, F: PrimeField, const M: usize, const N: usize> AllocVar<Matrix<S, M, N>, F>
+    for MatrixVar<I64Var<F>, M, N>
+{
+    fn new_variable<T: Borrow<Matrix<S, M, N>>>(
+        cs: impl Into<Namespace<F>>,
+        f: impl FnOnce() -> Result<T, SynthesisError>,
+        mode: AllocationMode,
+    ) -> Result<Self, SynthesisError> {
+        let cs = cs.into().cs();
+        let matrix = f()?;
+        matrix
+            .borrow()
+            .iter()
+            .map(|&v| I64Var::new_variable(cs.clone(), || Ok(v), mode))
             .collect()
     }
 }
@@ -130,8 +173,39 @@ impl<F: PrimeField, const M: usize, const N: usize> EqGadget<F> for MatrixVar<Fp
     }
 }
 
+impl<F: PrimeField, const M: usize, const N: usize> EqGadget<F> for MatrixVar<I64Var<F>, M, N> {
+    fn is_eq(&self, other: &Self) -> Result<Boolean<F>, SynthesisError> {
+        let mut r = Boolean::TRUE;
+        for (a, b) in self.0.iter().zip(other.0.iter()) {
+            r &= a.is_eq(b)?;
+        }
+        Ok(r)
+    }
+
+    fn enforce_equal(&self, other: &Self) -> Result<(), SynthesisError> {
+        for (j, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
+            // print!("{}: ", j);
+            // let i = a.value()?;
+            // if i.into_bigint() < F::MODULUS_MINUS_ONE_DIV_TWO {
+            //     print!("{} ", i.into_bigint().to_string());
+            // } else {
+            //     print!("-{} ", (-i).into_bigint().to_string());
+            // }
+            // let i = b.value()?;
+            // if i.into_bigint() < F::MODULUS_MINUS_ONE_DIV_TWO {
+            //     print!("{} ", i.into_bigint().to_string());
+            // } else {
+            //     print!("-{} ", (-i).into_bigint().to_string());
+            // }
+            // println!();
+            a.enforce_equal(b)?;
+        }
+        Ok(())
+    }
+}
+
 impl<F: PrimeField, const M: usize, const N: usize> R1CSVar<F> for MatrixVar<FpVar<F>, M, N> {
-    type Value = Matrix<M, N>;
+    type Value = Matrix<F, M, N>;
 
     fn cs(&self) -> ConstraintSystemRef<F> {
         let mut cs = ConstraintSystemRef::None;
@@ -147,13 +221,31 @@ impl<F: PrimeField, const M: usize, const N: usize> R1CSVar<F> for MatrixVar<FpV
                 .iter()
                 .map(|v| {
                     let i = v.value()?;
-                    Ok(if i.into_bigint() < F::MODULUS_MINUS_ONE_DIV_TWO {
-                        let i: BigUint = i.into();
-                        i.to_i16().unwrap()
-                    } else {
-                        let i: BigUint = (-i).into();
-                        -(i.to_i16().unwrap())
-                    })
+                    Ok(i)
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ))
+    }
+}
+
+impl<F: PrimeField, const M: usize, const N: usize> R1CSVar<F> for MatrixVar<I64Var<F>, M, N> {
+    type Value = Matrix<i64, M, N>;
+
+    fn cs(&self) -> ConstraintSystemRef<F> {
+        let mut cs = ConstraintSystemRef::None;
+        for v in self.0.iter() {
+            cs = cs.or(v.cs());
+        }
+        cs
+    }
+
+    fn value(&self) -> Result<Self::Value, SynthesisError> {
+        Ok(Matrix::from_vec(
+            self.0
+                .iter()
+                .map(|v| {
+                    let i = v.value()?;
+                    Ok(i)
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         ))
@@ -161,7 +253,7 @@ impl<F: PrimeField, const M: usize, const N: usize> R1CSVar<F> for MatrixVar<FpV
 }
 
 impl<F: PrimeField, const M: usize, const N: usize> R1CSVar<F> for MatrixVar<Boolean<F>, M, N> {
-    type Value = Matrix<M, N>;
+    type Value = Matrix<bool, M, N>;
 
     fn cs(&self) -> ConstraintSystemRef<F> {
         let mut cs = ConstraintSystemRef::None;
@@ -177,7 +269,7 @@ impl<F: PrimeField, const M: usize, const N: usize> R1CSVar<F> for MatrixVar<Boo
                 .iter()
                 .map(|v| {
                     let i = v.value()?;
-                    Ok(i as i16)
+                    Ok(i)
                 })
                 .collect::<Result<Vec<_>, _>>()?,
         ))
@@ -320,7 +412,7 @@ impl<F: PrimeField, const M: usize, const N: usize> MatrixVar<FpVar<F>, M, N> {
     pub fn hadamard_quant(
         &self,
         qp_over_6: usize,
-        param: &QuantParamVar<F>,
+        param: &QuantParamVar<FpVar<F>>,
     ) -> Result<Self, SynthesisError> {
         match (M, N) {
             (4, 4) => {
@@ -343,7 +435,23 @@ impl<F: PrimeField, const M: usize, const N: usize> MatrixVar<FpVar<F>, M, N> {
                     .iter()
                     .enumerate()
                     {
-                        let (is_neg, abs) = rshift_abs(v, 16, 1)?;
+                        let cs = v.cs();
+                        let mode = if cs.is_none() {
+                            AllocationMode::Constant
+                        } else {
+                            AllocationMode::Witness
+                        };
+                        let is_neg = {
+                            Boolean::<F>::new_variable(
+                                cs.clone(),
+                                || {
+                                    Ok(v.value().unwrap().into_bigint()
+                                        > F::MODULUS_MINUS_ONE_DIV_TWO)
+                                },
+                                mode,
+                            )?
+                        };
+                        let abs = is_neg.select(&v.negate()?, &v)?;
                         let bits = to_bits(&(abs * &param.scale + param.offset.double()?), 32)?;
                         let level = Boolean::le_bits_to_fp(&bits[Q_BITS_4 + qp_over_6 + 1..])?;
                         r[(j, i)] = is_neg.select(&level.negate()?, &level)?;
@@ -394,7 +502,7 @@ impl<F: PrimeField, const M: usize, const N: usize> MatrixVar<FpVar<F>, M, N> {
     pub fn quant(
         &self,
         qp_over_6: usize,
-        params: &[QuantParamVar<F>],
+        params: &[QuantParamVar<FpVar<F>>],
         ac_only: bool,
     ) -> Result<Self, SynthesisError> {
         let q_bits = match (M, N) {
@@ -438,24 +546,58 @@ impl<F: PrimeField, const M: usize, const N: usize> MatrixVar<FpVar<F>, M, N> {
     }
 }
 
+impl<F: PrimeField, const M: usize, const N: usize> MatrixVar<I64Var<F>, M, N> {
+    fn new() -> Self {
+        Self(Array2::from_elem((M, N), I64Var::zero()))
+    }
+
+    pub fn dct_region<const P: usize, const Q: usize>(
+        &self,
+        i_offset: usize,
+        j_offset: usize,
+    ) -> Result<MatrixVar<I64Var<F>, P, Q>, SynthesisError> {
+        match (P, Q) {
+            (4, 4) => {
+                let mut t = vec![];
+                for i in 0..4 {
+                    let p = &self.slice(s![i_offset + i, j_offset..]);
+                    t.push(&p[0] + &p[1] + &p[2] + &p[3]);
+                    t.push(&p[0].double()? + &p[1] - &p[2] - &p[3].double()?);
+                    t.push(&p[0] - &p[1] - &p[2] + &p[3]);
+                    t.push(&p[0] - &p[1].double()? + &p[2].double()? - &p[3]);
+                }
+                let mut r = MatrixVar::<I64Var<F>, P, Q>::new();
+                for i in 0..4 {
+                    r[(0, i)] = &t[i] + &t[i + 4] + &t[i + 8] + &t[i + 12];
+                    r[(1, i)] = &t[i].double()? + &t[i + 4] - &t[i + 8] - &t[i + 12].double()?;
+                    r[(2, i)] = &t[i] - &t[i + 4] - &t[i + 8] + &t[i + 12];
+                    r[(3, i)] = &t[i] - &t[i + 4].double()? + &t[i + 8].double()? - &t[i + 12];
+                }
+                Ok(r)
+            }
+            _ => unimplemented!(),
+        }
+    }
+}
+
 fn quant_core<F: PrimeField, const X: usize, const Y_DC: bool>(
     la: LookupArgumentRef<F>,
-    v: FpVar<F>,
+    v: I64Var<F>,
     is_neg: Boolean<F>,
     qp_over_6: usize,
-    two_to_qp_over_6: &FpVar<F>,
-) -> Result<FpVar<F>, SynthesisError> {
+    two_to_qp_over_6: &I64Var<F>,
+) -> Result<I64Var<F>, SynthesisError> {
     let cs = v.cs();
-    let v_val = v.value()?.into_bigint();
+    let v_val = v.value()?;
 
-    let q = FpVar::new_variable_with_inferred_mode(cs.clone(), || {
+    let q = I64Var::new_variable_with_inferred_mode(cs.clone(), || {
         if is_neg.value()? {
-            Ok(-F::from(v_val >> (Q_BITS_4 + X + qp_over_6) as u32))
+            Ok(-(v_val >> (Q_BITS_4 + X + qp_over_6)))
         } else {
-            Ok(F::from(v_val >> (Q_BITS_4 + X + qp_over_6) as u32))
+            Ok(v_val >> (Q_BITS_4 + X + qp_over_6))
         }
     })?;
-    let q_abs = FpVar::from(!is_neg).mac_enforce_bit_length::<false>(
+    let q_abs = I64Var::from(!is_neg).mac_enforce_bit_length::<false>(
         &q.double()?,
         &q.negate()?,
         COEFF_BITS - 1,
@@ -463,12 +605,10 @@ fn quant_core<F: PrimeField, const X: usize, const Y_DC: bool>(
         la.clone(),
     )? - &q;
     if Y_DC {
-        let s = FpVar::new_variable(
+        let s = I64Var::new_variable(
             cs.clone(),
             || {
-                Ok(F::from(
-                    (v_val >> 1) & F::BigInt::from((1u32 << qp_over_6) - 1),
-                ))
+                Ok((v_val >> 1) & ((1 << qp_over_6) - 1))
             },
             if cs.is_none() {
                 AllocationMode::Constant
@@ -476,22 +616,22 @@ fn quant_core<F: PrimeField, const X: usize, const Y_DC: bool>(
                 AllocationMode::Committed
             },
         )?;
-        (two_to_qp_over_6 - FpVar::one() - &s).enforce_bit_length(
+        (two_to_qp_over_6 - I64Var::one() - &s).enforce_bit_length(
             8,
             BoundingMode::TightForUnknownRange,
             la.clone(),
         )?;
-        let _ = (v * F::from(2).inverse().unwrap() - s).mac_enforce_bit_length::<true>(
+        let _ = (v.div(2)? - s).mac_enforce_bit_length::<true>(
             two_to_qp_over_6,
-            &(q_abs * -F::from(1 << (Q_BITS_4 + 1))),
+            &(q_abs * -(1 << (Q_BITS_4 + 1))),
             Q_BITS_4 + 1,
             BoundingMode::TightForUnknownRange,
             la.clone(),
         )?;
     } else {
-        let _ = (v * F::from(1u32 << 8)).mac_enforce_bit_length::<true>(
+        let _ = (v * (1 << 8)).mac_enforce_bit_length::<true>(
             two_to_qp_over_6,
-            &(q_abs * -F::from(1u128 << (Q_BITS_4 + X + 8))),
+            &(q_abs * -(1 << (Q_BITS_4 + X + 8))),
             Q_BITS_4 + X + 8,
             BoundingMode::TightForSmallAbs,
             la.clone(),
@@ -501,16 +641,16 @@ fn quant_core<F: PrimeField, const X: usize, const Y_DC: bool>(
     Ok(q)
 }
 
-impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
+impl<F: PrimeField> MatrixVar<I64Var<F>, 16, 16> {
     pub fn encode_luma_4x4<const DUMMY: bool>(
         &self,
         cs: ConstraintSystemRef<F>,
         la: LookupArgumentRef<F>,
         pred: &Self,
         is_i16x16: &Boolean<F>,
-        offset: &FpVar<F>,
-        two_to_qp_over_6: &FpVar<F>,
-        (scale0, scale1, scale2): &(FpVar<F>, FpVar<F>, FpVar<F>),
+        offset: &I64Var<F>,
+        two_to_qp_over_6: &I64Var<F>,
+        (scale0, scale1, scale2): &(I64Var<F>, I64Var<F>, I64Var<F>),
     ) -> Result<Self, SynthesisError> {
         #[cfg(feature = "constraints")]
         let t = cs.num_constraints();
@@ -529,8 +669,8 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
 
         #[cfg(feature = "constraints")]
         let t = cs.num_constraints();
-        let qp_over_6: BigUint = two_to_qp_over_6.value()?.into();
-        let qp_over_6 = log2(qp_over_6.to_usize().unwrap()) as usize;
+        let qp_over_6 = two_to_qp_over_6.value()? as usize;
+        let qp_over_6 = log2(qp_over_6) as usize;
 
         let blocks = (0..4)
             .map(|i| {
@@ -540,7 +680,7 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut dc_block = MatrixVar::<FpVar<F>, 4, 4>::new();
+        let mut dc_block = MatrixVar::<I64Var<F>, 4, 4>::new();
         for i in 0..4 {
             for j in 0..4 {
                 dc_block[(i, j)] = blocks[i][j][(0, 0)].clone();
@@ -555,7 +695,7 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
                 t.push(&row[0] - &row[1] - &row[2] + &row[3]);
                 t.push(&row[0] - &row[1] + &row[2] - &row[3]);
             }
-            let mut block = MatrixVar::<FpVar<F>, 4, 4>::new();
+            let mut block = MatrixVar::<I64Var<F>, 4, 4>::new();
             for i in 0..4 {
                 for (j, v) in vec![
                     &t[i] + &t[i + 4] + &t[i + 8] + &t[i + 12],
@@ -597,10 +737,9 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
                             } else {
                                 v
                             }
-                            .value()?
-                            .into_bigint();
-                            let is_neg = v > F::MODULUS_MINUS_ONE_DIV_TWO;
-                            let is_odd = if is_neg { !v.is_odd() } else { v.is_odd() };
+                            .value()?;
+                            let is_neg = v < 0;
+                            let is_odd = v % 2 != 0;
                             (
                                 Boolean::<F>::new_variable_with_inferred_mode(cs.clone(), || {
                                     Ok(is_neg)
@@ -612,10 +751,10 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
                         };
                         let v = is_i16x16.select(
                             &(&dc_block[(i / 2 * 2 + j / 2, i % 2 * 2 + j % 2)]
-                                - FpVar::from(is_odd)),
+                                - I64Var::from(is_odd)),
                             &v.double()?.double()?,
                         )?;
-                        let v = is_neg.select(&v.negate()?, &v)? * scale0 + offset * F::from(4u32);
+                        let v = is_neg.select(&v.negate()?, &v)? * scale0 + offset * 4;
                         coeffs.push(quant_core::<_, 2, true>(
                             la.clone(),
                             v,
@@ -625,7 +764,7 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
                         )?);
                     } else {
                         let is_neg = Boolean::<F>::new_variable_with_inferred_mode(v.cs(), || {
-                            Ok(v.value()?.into_bigint() > F::MODULUS_MINUS_ONE_DIV_TWO)
+                            Ok(v.value()? < 0)
                         })?;
                         let v = is_neg.select(&v.negate()?, &v)?
                             * match k {
@@ -691,20 +830,20 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 16, 16> {
     // }
 }
 
-impl<F: PrimeField> MatrixVar<FpVar<F>, 8, 8> {
+impl<F: PrimeField> MatrixVar<I64Var<F>, 8, 8> {
     pub fn encode_chroma<const DUMMY: bool>(
         &self,
         cs: ConstraintSystemRef<F>,
         la: LookupArgumentRef<F>,
         pred: &Self,
-        offset: &FpVar<F>,
-        two_to_qp_over_6: &FpVar<F>,
-        (scale0, scale1, scale2): &(FpVar<F>, FpVar<F>, FpVar<F>),
+        offset: &I64Var<F>,
+        two_to_qp_over_6: &I64Var<F>,
+        (scale0, scale1, scale2): &(I64Var<F>, I64Var<F>, I64Var<F>),
     ) -> Result<Self, SynthesisError> {
         #[cfg(feature = "constraints")]
         let t = cs.num_constraints();
-        let qp_over_6: BigUint = two_to_qp_over_6.value()?.into();
-        let qp_over_6 = log2(qp_over_6.to_usize().unwrap()) as usize;
+        let qp_over_6 = two_to_qp_over_6.value()? as usize;
+        let qp_over_6 = log2(qp_over_6) as usize;
 
         let diff = self
             .iter()
@@ -729,7 +868,7 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 8, 8> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut dc_block = MatrixVar::<FpVar<F>, 2, 2>::new();
+        let mut dc_block = MatrixVar::<I64Var<F>, 2, 2>::new();
         for i in 0..2 {
             for j in 0..2 {
                 dc_block[(i, j)] = blocks[i][j][(0, 0)].clone();
@@ -741,7 +880,7 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 8, 8> {
             let p2 = &dc_block[(1, 0)] + &dc_block[(1, 1)];
             let p3 = &dc_block[(1, 0)] - &dc_block[(1, 1)];
 
-            MatrixVar::<FpVar<F>, 2, 2>::from_vec(vec![&p0 + &p2, &p1 + &p3, &p0 - &p2, &p1 - &p3])
+            MatrixVar::<I64Var<F>, 2, 2>::from_vec(vec![&p0 + &p2, &p1 + &p3, &p0 - &p2, &p1 - &p3])
         };
         #[cfg(feature = "constraints")]
         if DUMMY {
@@ -762,7 +901,7 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 8, 8> {
                         let v = dc_block[(i, j)].clone();
                         let is_neg = {
                             Boolean::<F>::new_variable_with_inferred_mode(v.cs(), || {
-                                Ok(v.value().unwrap().into_bigint() > F::MODULUS_MINUS_ONE_DIV_TWO)
+                                Ok(v.value()? < 0)
                             })?
                         };
                         let v = is_neg.select(&v.negate()?, &v)? * scale0 + offset.double()?;
@@ -775,7 +914,7 @@ impl<F: PrimeField> MatrixVar<FpVar<F>, 8, 8> {
                         )?);
                     } else {
                         let is_neg = Boolean::<F>::new_variable_with_inferred_mode(v.cs(), || {
-                            Ok(v.value()?.into_bigint() > F::MODULUS_MINUS_ONE_DIV_TWO)
+                            Ok(v.value()? < 0)
                         })?;
                         let v = is_neg.select(&v.negate()?, &v)?
                             * match k {
@@ -967,13 +1106,23 @@ impl<F: PrimeField> BitDecompose<F> for FpVar<F> {
         }
 
         let chunks = {
-            let chunks = v
+            let chunks = if table_size == 8 {
+                v
+                .into_bigint()
+                .to_bytes_le()
+                .into_iter()
+                .take(num_chunks)
+                .map(F::from)
+                .collect::<Vec<_>>()
+            } else {
+                v
                 .into_bigint()
                 .to_bits_le()
                 .chunks(table_size)
                 .take(num_chunks)
                 .map(|chunk| F::from_bigint(F::BigInt::from_bits_le(chunk)).unwrap())
-                .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+            };
 
             Vec::<FpVar<_>>::new_variable(
                 cs.clone(),
@@ -1016,6 +1165,124 @@ impl<F: PrimeField> BitDecompose<F> for FpVar<F> {
     ) -> Result<(), SynthesisError> {
         let _ =
             self.mac_enforce_bit_length::<false>(&FpVar::one(), &FpVar::zero(), length, mode, la)?;
+        Ok(())
+    }
+}
+
+impl<F: PrimeField> BitDecompose<F> for I64Var<F> {
+    fn mac_enforce_bit_length<const DIV: bool>(
+        &self,
+        multiplicand: &Self,
+        addend: &Self,
+        length: usize,
+        mode: BoundingMode,
+        la: LookupArgumentRef<F>,
+    ) -> Result<Self, SynthesisError> {
+        let cs = self.cs();
+
+        let table_size = (la.len() as i64).ilog2() as usize;
+
+        let num_chunks = (length + table_size - 1) / table_size;
+        let extended_length = num_chunks * table_size;
+        let scale = if mode == BoundingMode::TightForSmallAbs {
+            1 << (extended_length - length)
+        } else {
+            1
+        };
+
+        let v = if DIV {
+            (self.value()? / multiplicand.value()? + addend.value()?) * scale
+        } else {
+            (self.value()? * multiplicand.value()? + addend.value()?) * scale
+        };
+
+        if num_chunks == 1 {
+            let result = I64Var::new_variable(
+                cs.clone(),
+                || Ok(v),
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Committed
+                },
+            )?;
+            let product = &result.div(scale)? - addend;
+            if DIV {
+                product.mul_equals(multiplicand, self)?;
+            } else {
+                self.mul_equals(multiplicand, &product)?;
+            }
+
+            if mode == BoundingMode::TightForUnknownRange && length != extended_length {
+                result.enforce_bit_length(
+                    table_size + length - extended_length,
+                    BoundingMode::TightForSmallAbs,
+                    la,
+                )?;
+            }
+
+            return Ok(product);
+        }
+
+        let chunks = {
+            let chunks = if table_size == 8 {
+                (v as u64)
+                .to_le_bytes()
+                .into_iter()
+                .take(num_chunks)
+                .map(|i| i as i64)
+                .collect::<Vec<_>>()
+            } else {
+                let mut chunks = vec![];
+                let mut v = v as u64;
+                for _ in 0..num_chunks {
+                    chunks.push((v & ((1 << table_size) - 1)) as i64);
+                    v >>= table_size;
+                }
+                chunks
+            };
+
+            Vec::<I64Var<_>>::new_variable(
+                cs.clone(),
+                || Ok(chunks),
+                if cs.is_none() {
+                    AllocationMode::Constant
+                } else {
+                    AllocationMode::Committed
+                },
+            )?
+        };
+
+        let mut accumulated = I64Var::zero();
+        for (i, v) in chunks.iter().enumerate() {
+            accumulated = &accumulated + v * (1 << (i * table_size));
+        }
+        let product = accumulated.div(scale)? - addend;
+        if DIV {
+            product.mul_equals(multiplicand, &self)?;
+        } else {
+            self.mul_equals(multiplicand, &product)?;
+        }
+
+        if mode == BoundingMode::TightForUnknownRange && length != extended_length {
+            chunks[num_chunks - 1].enforce_bit_length(
+                table_size + length - extended_length,
+                BoundingMode::TightForSmallAbs,
+                la,
+            )?;
+        }
+
+        Ok(product)
+    }
+
+    fn enforce_bit_length(
+        &self,
+        length: usize,
+        mode: BoundingMode,
+        la: LookupArgumentRef<F>,
+    ) -> Result<(), SynthesisError> {
+        let _ =
+            self.mac_enforce_bit_length::<false>(&I64Var::one(), &I64Var::zero(), length, mode, la)?;
         Ok(())
     }
 }

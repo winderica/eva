@@ -5,6 +5,8 @@ use ark_relations::r1cs::SynthesisError;
 use ark_std::{end_timer, start_timer, Zero};
 use ark_std::{rand::RngCore, UniformRand};
 use core::marker::PhantomData;
+use icicle_cuda_runtime::memory::DeviceVec;
+use icicle_cuda_runtime::stream::CudaStream;
 use std::sync::Arc;
 
 use super::CommitmentScheme;
@@ -73,6 +75,7 @@ where
     }
 
     fn commit(
+        stream: Option<&CudaStream>,
         params: &Self::ProverParams,
         v: &[C::ScalarField],
         r: &C::ScalarField, // blinding factor
@@ -88,9 +91,40 @@ where
         }
 
         let timer = start_timer!(|| "MSM on GPU");
-        let msm = <C::Config as MSM<C>>::var_msm_precomputed(&params.device_generators, &v, 0);
+        let msm =
+            <C::Config as MSM<C>>::var_msm_precomputed(stream, &params.device_generators, &v, 0, None);
+        end_timer!(timer);
+        let msm = <C::Config as MSM<C>>::retrieve_msm_result(stream, &msm);
+        // assert_eq!(msm, C::msm_unchecked(&params.generators[..v.len()], &v));
+
+        // h⋅r + <g, v>
+        // use msm_unchecked because we already ensured at the if that lengths match
+        if !H {
+            return Ok(msm);
+        }
+        Ok(params.h.mul(r) + msm)
+    }
+
+    fn commit_device(
+        stream: Option<&CudaStream>,
+        params: &Self::ProverParams,
+        v: &DeviceVec<C::ScalarField>,
+        r: &C::ScalarField, // blinding factor
+    ) -> Result<C, Error> {
+        if !H && (!r.is_zero()) {
+            return Err(Error::BlindingNotZero);
+        }
+
+        let timer = start_timer!(|| "MSM on GPU");
+        let msm = <C::Config as MSM<C>>::var_msm_device_precomputed(
+            stream,
+            &params.device_generators,
+            &v,
+            0,
+        );
         end_timer!(timer);
         // assert_eq!(msm, C::msm_unchecked(&params.generators[..v.len()], &v));
+        let msm = <C::Config as MSM<C>>::retrieve_msm_result(stream, &msm);
 
         // h⋅r + <g, v>
         // use msm_unchecked because we already ensured at the if that lengths match
@@ -273,7 +307,7 @@ mod tests {
         } else {
             Fr::zero()
         };
-        let cm = Pedersen::<Projective, hiding>::commit(&params, &v, &r).unwrap();
+        let cm = Pedersen::<Projective, hiding>::commit(None, &params, &v, &r).unwrap();
         let proof =
             Pedersen::<Projective, hiding>::prove(&params, &mut transcript_p, &cm, &v, &r, None)
                 .unwrap();
@@ -301,7 +335,7 @@ mod tests {
         } else {
             Fr::zero()
         };
-        let cm = Pedersen::<Projective, hiding>::commit(&params, &v, &r).unwrap();
+        let cm = Pedersen::<Projective, hiding>::commit(None, &params, &v, &r).unwrap();
 
         let v_bits: Vec<Vec<bool>> = v.iter().map(|val| val.into_bigint().to_bits_le()).collect();
         let r_bits: Vec<bool> = r.into_bigint().to_bits_le();

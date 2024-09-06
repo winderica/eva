@@ -30,7 +30,6 @@ impl<F: PrimeField> EqEvalGadget<F> {
 
 #[cfg(test)]
 mod tests {
-
     use crate::utils::virtual_polynomial::eq_eval;
 
     use super::EqEvalGadget;

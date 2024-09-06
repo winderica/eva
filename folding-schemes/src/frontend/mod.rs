@@ -185,17 +185,11 @@ impl<F: PrimeField> LookupArgument<F> {
 
         let timer = start_timer!(|| "Get RHS LC");
         if !cs.is_in_setup_mode() {
-            cs.witness_assignment.extend_from_slice(&queries_inv);
+            cs.witness_assignment.extend(queries_inv);
         }
         let w_index = cs.num_witness_variables + cs.w_offset;
         let lc_index = cs.num_linear_combinations + cs.lc_offset;
-        let new_lc = LinearCombination(
-            (0..num_query_variables)
-                .into_par_iter()
-                .map(|i| (F::one(), Variable::Witness(w_index + i)))
-                .collect(),
-        );
-        if cs.should_construct_matrices() {
+        let new_lc = if cs.should_construct_matrices() {
             cs.a_constraints.extend_from_slice(
                 &(0..num_query_variables)
                     .into_par_iter()
@@ -230,7 +224,15 @@ impl<F: PrimeField> LookupArgument<F> {
                     .insert(LcIndex(lc_index + j * 3 + 2), Variable::One.into());
             }
             cs.num_linear_combinations += num_query_variables * 3;
-        }
+            LinearCombination(
+                (0..num_query_variables)
+                    .into_par_iter()
+                    .map(|i| (F::one(), Variable::Witness(w_index + i)))
+                    .collect(),
+            )
+        } else {
+            lc!()
+        };
 
         cs.num_witness_variables += num_query_variables;
         cs.num_constraints += num_query_variables;

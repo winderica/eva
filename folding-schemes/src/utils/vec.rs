@@ -1,11 +1,10 @@
-use std::sync::Arc;
-
 use ark_ff::PrimeField;
 use ark_poly::{
     univariate::DensePolynomial, EvaluationDomain, Evaluations, GeneralEvaluationDomain,
 };
 pub use ark_relations::r1cs::Matrix as R1CSMatrix;
 use ark_std::cfg_iter;
+use icicle_core::vec_ops::HybridMatrix;
 use rayon::prelude::*;
 
 use crate::{Error, MVM};
@@ -17,7 +16,7 @@ pub struct SparseMatrix<F: PrimeField> {
     /// coeffs = R1CSMatrix = Vec<Vec<(F, usize)>>, which contains each row and the F is the value
     /// of the coefficient and the usize indicates the column position
     pub coeffs: R1CSMatrix<F>,
-    pub cuda: Arc<CudaSparseMatrix<F>>,
+    pub cuda: HybridMatrix,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -26,19 +25,16 @@ pub struct CSRSparseMatrix<F> {
     pub data: Vec<F>,
     pub col_idx: Vec<i32>,
     pub row_ptr: Vec<i32>,
-}
 
-pub struct CudaSparseMatrix<F> {
-    pub data: icicle_cuda_runtime::memory::DeviceVec<F>,
-    pub row_ptr: icicle_cuda_runtime::memory::DeviceVec<i32>,
-    pub col_idx: icicle_cuda_runtime::memory::DeviceVec<i32>,
+    pub sparse_to_original: Vec<i32>,
+    pub dense_to_original: Vec<i32>,
 }
 
 impl<F: PrimeField> SparseMatrix<F> {
     pub fn new(n_rows: usize, n_cols: usize, coeffs: Vec<Vec<(F, usize)>>) -> Self where F: MVM {
         let csr = Self::to_csr(n_rows, n_cols, &coeffs);
         SparseMatrix {
-            cuda: Arc::new(MVM::prepare_matrix(&csr)),
+            cuda: MVM::prepare_matrix(&csr),
             n_rows,
             n_cols,
             coeffs,
@@ -74,10 +70,23 @@ impl<F: PrimeField> SparseMatrix<F> {
         indices.shrink_to_fit();
         indptr.shrink_to_fit();
 
+        let mut sparse_to_original = vec![];
+        let mut dense_to_original = vec![];
+
+        for (i, row) in coeffs.iter().enumerate() {
+            if row.len() > 32 {
+                dense_to_original.push(i as i32);
+            } else {
+                sparse_to_original.push(i as i32);
+            }
+        }
+
         CSRSparseMatrix {
             data,
             col_idx: indices,
             row_ptr: indptr,
+            sparse_to_original,
+            dense_to_original,
         }
     }
 }
