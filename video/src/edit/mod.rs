@@ -1,12 +1,3 @@
-use std::borrow::Borrow;
-
-use ark_ff::PrimeField;
-use ark_r1cs_std::{
-    alloc::AllocVar
-    ,
-    fields::FieldVar,
-};
-
 pub mod constraints;
 
 use crate::encode::Matrix;

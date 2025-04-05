@@ -1,4 +1,4 @@
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::PrimeField;
 use ark_r1cs_std::{
     alloc::AllocVar,
     boolean::Boolean,
@@ -7,12 +7,13 @@ use ark_r1cs_std::{
 };
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
 use ndarray::Array2;
-use num_traits::ToPrimitive;
 use std::fmt::Debug;
 use std::{borrow::Borrow, cmp::min};
 
 use crate::{
-    encode::{constraints::MatrixVar, Matrix}, var::I64Var, MB_BITS
+    encode::{constraints::MatrixVar, Matrix},
+    var::I64Var,
+    MB_BITS,
 };
 
 pub trait EditConfig: Default {
@@ -187,7 +188,7 @@ impl EditGadget for InvertColor {
         y: &Matrix<u8, 16, 16>,
         u: &Matrix<u8, 8, 8>,
         v: &Matrix<u8, 8, 8>,
-        cfg: &Self::Cfg,
+        _cfg: &Self::Cfg,
     ) -> (Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>) {
         (y.invert_color(), u.invert_color(), v.invert_color())
     }
@@ -222,9 +223,9 @@ impl EditGadget for Grayscale {
 
     fn edit_native(
         y: &Matrix<u8, 16, 16>,
-        u: &Matrix<u8, 8, 8>,
-        v: &Matrix<u8, 8, 8>,
-        cfg: &Self::Cfg,
+        _u: &Matrix<u8, 8, 8>,
+        _v: &Matrix<u8, 8, 8>,
+        _cfg: &Self::Cfg,
     ) -> (Matrix<u8, 16, 16>, Matrix<u8, 8, 8>, Matrix<u8, 8, 8>) {
         (
             y.clone(),
@@ -235,8 +236,8 @@ impl EditGadget for Grayscale {
 
     fn edit_circuit<F: PrimeField>(
         y: &MatrixVar<I64Var<F>, 16, 16>,
-        u: &MatrixVar<I64Var<F>, 8, 8>,
-        v: &MatrixVar<I64Var<F>, 8, 8>,
+        _u: &MatrixVar<I64Var<F>, 8, 8>,
+        _v: &MatrixVar<I64Var<F>, 8, 8>,
         _cfg: &Self::CfgVar<F>,
     ) -> Result<
         (
@@ -316,19 +317,19 @@ impl EditGadget for Brightness {
                 .map(|v| {
                     let (p, q, r) = {
                         let cs = v.cs().or(cfg.0.cs());
-                        let v = (v.value()? * cfg.0.value()?);
+                        let v = v.value()? * cfg.0.value()?;
                         let p = v >> 16;
                         let q = (v >> 8) & ((1 << 8) - 1);
                         let r = v & ((1 << 8) - 1);
                         (
-                            I64Var::new_committed(cs.clone(), || Ok((p)))?,
-                            I64Var::new_committed(cs.clone(), || Ok((q)))?,
-                            I64Var::new_committed(cs, || Ok((r)))?,
+                            I64Var::new_committed(cs.clone(), || Ok(p))?,
+                            I64Var::new_committed(cs.clone(), || Ok(q))?,
+                            I64Var::new_committed(cs, || Ok(r))?,
                         )
                     };
                     v.mul_equals(&cfg.0, &(&p * (1 << 16) + &q * (1 << 8) + r))?;
 
-                    p.is_zero()?.select(&q, &I64Var::constant((255)))
+                    p.is_zero()?.select(&q, &I64Var::constant(255))
                 })
                 .collect::<Result<_, _>>()?,
             u.clone(),
@@ -457,10 +458,7 @@ impl<F: PrimeField> AllocVar<MaskCfg, F> for MaskCfgVar<F> {
         for i in 0..16 {
             for j in 0..16 {
                 y_var[[i, j]] = (
-                    I64Var::<F>::new_committed(
-                        cs.clone(),
-                        || Ok((mask.0[[i, j]].0)),
-                    )?,
+                    I64Var::<F>::new_committed(cs.clone(), || Ok(mask.0[[i, j]].0))?,
                     Boolean::new_variable(cs.clone(), || Ok(mask.0[[i, j]].1), mode)?,
                 );
             }
@@ -468,17 +466,11 @@ impl<F: PrimeField> AllocVar<MaskCfg, F> for MaskCfgVar<F> {
         for i in 0..8 {
             for j in 0..8 {
                 u_var[[i, j]] = (
-                    I64Var::<F>::new_committed(
-                        cs.clone(),
-                        || Ok((mask.1[[i, j]].0)),
-                    )?,
+                    I64Var::<F>::new_committed(cs.clone(), || Ok(mask.1[[i, j]].0))?,
                     Boolean::new_variable(cs.clone(), || Ok(mask.1[[i, j]].1), mode)?,
                 );
                 v_var[[i, j]] = (
-                    I64Var::<F>::new_committed(
-                        cs.clone(),
-                        || Ok((mask.2[[i, j]].0)),
-                    )?,
+                    I64Var::<F>::new_committed(cs.clone(), || Ok(mask.2[[i, j]].0))?,
                     Boolean::new_variable(cs.clone(), || Ok(mask.2[[i, j]].1), mode)?,
                 );
             }
@@ -492,7 +484,7 @@ impl<F: PrimeField, const M: usize, const N: usize> MatrixVar<I64Var<F>, M, N> {
         let mut inverted = self.clone();
         for i in 0..M {
             for j in 0..N {
-                inverted[(i, j)] = I64Var::constant((255)) - &inverted[(i, j)];
+                inverted[(i, j)] = I64Var::constant(255) - &inverted[(i, j)];
             }
         }
         Ok(inverted)

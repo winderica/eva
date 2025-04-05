@@ -4,9 +4,7 @@ use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::pairing::Pairing;
 use ark_ec::{AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::{BigInteger, PrimeField, ToConstraintField};
-use ark_r1cs_std::{
-    convert::ToConstraintFieldGadget, prelude::CurveVar, R1CSVar as _,
-};
+use ark_r1cs_std::{convert::ToConstraintFieldGadget, prelude::CurveVar, R1CSVar as _};
 use ark_serialize::{CanonicalSerialize, Compress};
 use ark_snark::SNARK;
 use ark_std::rand::{CryptoRng, RngCore};
@@ -26,7 +24,7 @@ use folding_schemes::folding::{
     },
 };
 use folding_schemes::frontend::FCircuit;
-use folding_schemes::{Decider as DeciderTrait, MVM};
+use folding_schemes::MVM;
 use folding_schemes::{Error, MSM};
 
 /// This file implements the onchain (Ethereum's EVM) decider circuit. For non-ethereum use cases,
@@ -38,10 +36,8 @@ use ark_r1cs_std::{
     boolean::Boolean,
     convert::ToBitsGadget,
     eq::EqGadget,
-    fields::{fp::FpVar, FieldVar}
-    ,
+    fields::{fp::FpVar, FieldVar},
 };
-
 
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
 use core::borrow::Borrow;
@@ -54,9 +50,6 @@ use folding_schemes::folding::nova::circuits::NIFSGadget;
 use folding_schemes::folding::nova::{
     circuits::{CurrentInstanceVar, RunningInstanceVar, CF1},
     Witness,
-};
-use folding_schemes::transcript::{
-    Transcript, TranscriptVar,
 };
 use folding_schemes::utils::gadgets::{MatrixGadget, SparseMatrixVar, VectorGadget};
 
@@ -783,7 +776,8 @@ impl Decider {
                                 .to_bits_le()
                                 .chunks(NonNativeUintVar::<E::ScalarField>::bits_per_limb()),
                         )
-                        .map(<E::ScalarField as PrimeField>::BigInt::from_bits_le).collect::<Vec<_>>()
+                        .map(<E::ScalarField as PrimeField>::BigInt::from_bits_le)
+                        .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>(),
             vec![r.into_bigint()],

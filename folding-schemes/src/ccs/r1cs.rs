@@ -93,9 +93,7 @@ pub fn extract_r1cs<F: MVM>(cs: &ConstraintSystem<F>) -> R1CS<F> {
     end_timer!(timer);
 
     let n_rows = cs.num_constraints;
-    let n_cols = cs.num_instance_variables
-        + cs.num_witness_variables
-        + cs.num_committed_variables; // cs.num_instance_variables already counts the 1
+    let n_cols = cs.num_instance_variables + cs.num_witness_variables + cs.num_committed_variables; // cs.num_instance_variables already counts the 1
 
     let A = SparseMatrix::<F>::new(n_rows, n_cols, m.a);
     let B = SparseMatrix::<F>::new(n_rows, n_cols, m.b);
@@ -113,11 +111,7 @@ pub fn extract_r1cs<F: MVM>(cs: &ConstraintSystem<F>) -> R1CS<F> {
 /// extracts the witness and the public inputs from arkworks ConstraintSystem.
 pub fn extract_w_x<F: PrimeField>(cs: &ConstraintSystem<F>) -> (Vec<F>, Vec<F>) {
     (
-        [
-            &cs.committed_assignment[..],
-            &cs.witness_assignment,
-        ]
-        .concat(),
+        [&cs.committed_assignment[..], &cs.witness_assignment].concat(),
         // skip the first element which is '1'
         cs.instance_assignment[1..].to_vec(),
     )
@@ -153,7 +147,13 @@ pub mod tests {
             vec![0, 0, 1, 0, 0, 0],
         ]);
 
-        R1CS::<F> { l: 1, q: 0, A, B, C }
+        R1CS::<F> {
+            l: 1,
+            q: 0,
+            A,
+            B,
+            C,
+        }
     }
 
     pub fn get_test_z<F: PrimeField>(input: usize) -> Vec<F> {

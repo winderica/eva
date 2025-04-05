@@ -8,10 +8,7 @@ use ark_ec::{AdditiveGroup, AffineRepr, CurveGroup};
 use ark_ff::{BigInteger, PrimeField, ToConstraintField};
 use ark_r1cs_std::{convert::ToConstraintFieldGadget, groups::GroupOpsBounds, prelude::CurveVar};
 use ark_std::UniformRand;
-use ark_std::{
-    add_to_trace,
-    rand::{thread_rng, Rng},
-};
+use ark_std::{add_to_trace, rand::Rng};
 use ark_std::{end_timer, fmt::Debug, start_timer};
 use ark_std::{One, Zero};
 use core::marker::PhantomData;
@@ -19,8 +16,7 @@ use icicle_cuda_runtime::memory::DeviceVec;
 use icicle_cuda_runtime::stream::CudaStream;
 use num_bigint::BigUint;
 use num_traits::cast::ToPrimitive;
-use std::{cmp::max, time::Instant};
-
+use std::cmp::max;
 
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystem};
 
@@ -209,7 +205,7 @@ pub struct Witness<C: CurveGroup> {
 }
 
 impl<C: CurveGroup> Witness<C> {
-    pub fn new(mut qw: Vec<C::ScalarField>, r1cs: &R1CS<C::ScalarField>) -> Self {
+    pub fn new(qw: Vec<C::ScalarField>, r1cs: &R1CS<C::ScalarField>) -> Self {
         // note: at the current version, we don't use the blinding factors and we set them to 0
         // always.
         Self {
@@ -646,14 +642,15 @@ where
                 end_timer!(timer);
 
                 let timer = start_timer!(|| "Generate CycleFold challenge");
-                let (cf_r_bits, cf_cmT) = CycleFoldChallengeGadget::<C2, GC2>::get_challenge_device(
-                    Some(&self.stream2),
-                    &self.poseidon_config,
-                    &cf_U_i,
-                    &mut cf_u_i,
-                    &cf_cmT,
-                    &cmW,
-                )?;
+                let (cf_r_bits, cf_cmT) =
+                    CycleFoldChallengeGadget::<C2, GC2>::get_challenge_device(
+                        Some(&self.stream2),
+                        &self.poseidon_config,
+                        &cf_U_i,
+                        &mut cf_u_i,
+                        &cf_cmT,
+                        &cmW,
+                    )?;
                 let cf_r_Fq = C1::BaseField::from_bigint(BigInteger::from_bits_le(&cf_r_bits))
                     .ok_or(Error::OutOfBounds)?;
                 end_timer!(timer);
@@ -760,14 +757,15 @@ where
                 end_timer!(timer);
 
                 let timer = start_timer!(|| "Generate CycleFold challenge");
-                let (cf_r_bits, cf_cmT) = CycleFoldChallengeGadget::<C2, GC2>::get_challenge_device(
-                    Some(&self.stream2),
-                    &self.poseidon_config,
-                    &cf_U_i,
-                    &mut cf_u_i,
-                    &cf_cmT,
-                    &cmW,
-                )?;
+                let (cf_r_bits, cf_cmT) =
+                    CycleFoldChallengeGadget::<C2, GC2>::get_challenge_device(
+                        Some(&self.stream2),
+                        &self.poseidon_config,
+                        &cf_U_i,
+                        &mut cf_u_i,
+                        &cf_cmT,
+                        &cmW,
+                    )?;
                 let cf_r_Fq = C1::BaseField::from_bigint(BigInteger::from_bits_le(&cf_r_bits))
                     .ok_or(Error::OutOfBounds)?;
                 end_timer!(timer);
@@ -875,14 +873,15 @@ where
                 end_timer!(timer);
 
                 let timer = start_timer!(|| "Generate CycleFold challenge");
-                let (cf_r_bits, cf_cmT) = CycleFoldChallengeGadget::<C2, GC2>::get_challenge_device(
-                    Some(&self.stream2),
-                    &self.poseidon_config,
-                    &cf_U_i,
-                    &mut cf_u_i,
-                    &cf_cmT,
-                    &cmW,
-                )?;
+                let (cf_r_bits, cf_cmT) =
+                    CycleFoldChallengeGadget::<C2, GC2>::get_challenge_device(
+                        Some(&self.stream2),
+                        &self.poseidon_config,
+                        &cf_U_i,
+                        &mut cf_u_i,
+                        &cf_cmT,
+                        &cmW,
+                    )?;
                 let cf_r_Fq = C1::BaseField::from_bigint(BigInteger::from_bits_le(&cf_r_bits))
                     .ok_or(Error::OutOfBounds)?;
                 end_timer!(timer);
@@ -1035,10 +1034,7 @@ where
 
         #[cfg(test)]
         {
-            self.u_i.cmW = <C1::Config as MSM<C1>>::retrieve_msm_result(
-                Some(&self.stream3),
-                &cmW,
-            );
+            self.u_i.cmW = <C1::Config as MSM<C1>>::retrieve_msm_result(Some(&self.stream3), &cmW);
             vp.r1cs
                 .check_current_instance_relation(&self.w_i, &self.u_i)?;
             vp.r1cs.check_relaxed_running_instance_relation(
@@ -1161,10 +1157,11 @@ pub mod tests {
     use crate::transcript::poseidon::poseidon_test_config;
     use ark_bn254::{constraints::GVar, Fr, G1Projective as Projective};
     use ark_grumpkin::{constraints::GVar as GVar2, Projective as Projective2};
-    use ark_r1cs_std::fields::fp::FpVar;
     use ark_r1cs_std::alloc::AllocVar;
+    use ark_r1cs_std::fields::fp::FpVar;
     use ark_relations::r1cs::ConstraintSystemRef;
     use ark_relations::r1cs::SynthesisError;
+    use rand::thread_rng;
 
     #[derive(Clone, Copy, Debug)]
     pub struct LookupCircuit<F: PrimeField> {
@@ -1207,7 +1204,6 @@ pub mod tests {
     /// AugmentedFCircuit
     #[test]
     fn test_ivc() {
-        let mut rng = ark_std::test_rng();
         let poseidon_config = poseidon_test_config::<Fr>();
 
         let F_circuit = LookupCircuit::<Fr>::new(());
@@ -1223,7 +1219,10 @@ pub mod tests {
     }
 
     // test_ivc allowing to choose the CommitmentSchemes
-    fn test_ivc_opt<CS1: CommitmentScheme<Projective, ProverParams = PedersenParams<Projective>>, CS2: CommitmentScheme<Projective2, ProverParams = PedersenParams<Projective2>>>(
+    fn test_ivc_opt<
+        CS1: CommitmentScheme<Projective, ProverParams = PedersenParams<Projective>>,
+        CS2: CommitmentScheme<Projective2, ProverParams = PedersenParams<Projective2>>,
+    >(
         poseidon_config: PoseidonConfig<Fr>,
         F_circuit: LookupCircuit<Fr>,
     ) {

@@ -32,10 +32,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut e1 = vec![];
     let mut e2 = vec![];
     for i in 0..W / 16 * H / 16 * N / blocks_per_step {
-        let should_keeps = (i * blocks_per_step..(i + 1) * blocks_per_step).map(|v| {
-            let tt = v / (W / 16 * H / 16);
-            tt >= s && tt < e
-        }).collect::<Vec<_>>();
+        let should_keeps = (i * blocks_per_step..(i + 1) * blocks_per_step)
+            .map(|v| {
+                let tt = v / (W / 16 * H / 16);
+                tt >= s && tt < e
+            })
+            .collect::<Vec<_>>();
         if should_keeps.contains(&true) {
             for should_keep in &should_keeps {
                 if *should_keep {

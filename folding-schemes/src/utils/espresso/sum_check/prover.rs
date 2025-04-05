@@ -15,7 +15,6 @@ use crate::utils::{
     virtual_polynomial::VirtualPolynomial,
 };
 use ark_ec::{AdditiveGroup, CurveGroup};
-use ark_ff::Field;
 use ark_ff::{batch_inversion, PrimeField};
 use ark_poly::DenseMultilinearExtension;
 use ark_std::{cfg_into_iter, end_timer, start_timer, vec::Vec};

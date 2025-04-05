@@ -3,7 +3,6 @@ use ark_ff::PrimeField;
 use ark_poly::DenseMultilinearExtension;
 use ark_std::log2;
 
-
 use super::vec::SparseMatrix;
 
 /// Pad matrix so that its columns and rows are powers of two

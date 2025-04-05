@@ -1,14 +1,13 @@
 use std::borrow::Borrow;
 use std::ops::{Deref, Index, IndexMut};
 
-use ark_ff::{BigInteger, Field, One, PrimeField};
+use ark_ff::{BigInteger, One, PrimeField};
 use ark_r1cs_std::alloc::{AllocVar, AllocationMode};
 use ark_r1cs_std::boolean::Boolean;
 use ark_r1cs_std::eq::EqGadget;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::{fields::FieldVar, R1CSVar};
 use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
-use ark_std::iterable::Iterable;
 use ark_std::log2;
 use folding_schemes::frontend::LookupArgumentRef;
 use ndarray::{s, Array2};
@@ -124,8 +123,8 @@ impl<S: Copy, F: PrimeField + From<S>, const M: usize, const N: usize> AllocVar<
     }
 }
 
-impl<S: Copy + AsPrimitive<i64>, F: PrimeField, const M: usize, const N: usize> AllocVar<Matrix<S, M, N>, F>
-    for MatrixVar<I64Var<F>, M, N>
+impl<S: Copy + AsPrimitive<i64>, F: PrimeField, const M: usize, const N: usize>
+    AllocVar<Matrix<S, M, N>, F> for MatrixVar<I64Var<F>, M, N>
 {
     fn new_variable<T: Borrow<Matrix<S, M, N>>>(
         cs: impl Into<Namespace<F>>,
@@ -152,7 +151,7 @@ impl<F: PrimeField, const M: usize, const N: usize> EqGadget<F> for MatrixVar<Fp
     }
 
     fn enforce_equal(&self, other: &Self) -> Result<(), SynthesisError> {
-        for (j, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
+        for (_j, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
             // print!("{}: ", j);
             // let i = a.value()?;
             // if i.into_bigint() < F::MODULUS_MINUS_ONE_DIV_TWO {
@@ -183,7 +182,7 @@ impl<F: PrimeField, const M: usize, const N: usize> EqGadget<F> for MatrixVar<I6
     }
 
     fn enforce_equal(&self, other: &Self) -> Result<(), SynthesisError> {
-        for (j, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
+        for (_j, (a, b)) in self.0.iter().zip(other.0.iter()).enumerate() {
             // print!("{}: ", j);
             // let i = a.value()?;
             // if i.into_bigint() < F::MODULUS_MINUS_ONE_DIV_TWO {
@@ -607,9 +606,7 @@ fn quant_core<F: PrimeField, const X: usize, const Y_DC: bool>(
     if Y_DC {
         let s = I64Var::new_variable(
             cs.clone(),
-            || {
-                Ok((v_val >> 1) & ((1 << qp_over_6) - 1))
-            },
+            || Ok((v_val >> 1) & ((1 << qp_over_6) - 1)),
             if cs.is_none() {
                 AllocationMode::Constant
             } else {
@@ -644,7 +641,7 @@ fn quant_core<F: PrimeField, const X: usize, const Y_DC: bool>(
 impl<F: PrimeField> MatrixVar<I64Var<F>, 16, 16> {
     pub fn encode_luma_4x4<const DUMMY: bool>(
         &self,
-        cs: ConstraintSystemRef<F>,
+        _cs: ConstraintSystemRef<F>,
         la: LookupArgumentRef<F>,
         pred: &Self,
         is_i16x16: &Boolean<F>,
@@ -833,7 +830,7 @@ impl<F: PrimeField> MatrixVar<I64Var<F>, 16, 16> {
 impl<F: PrimeField> MatrixVar<I64Var<F>, 8, 8> {
     pub fn encode_chroma<const DUMMY: bool>(
         &self,
-        cs: ConstraintSystemRef<F>,
+        _cs: ConstraintSystemRef<F>,
         la: LookupArgumentRef<F>,
         pred: &Self,
         offset: &I64Var<F>,
@@ -981,7 +978,7 @@ fn rshift<F: PrimeField>(v: &FpVar<F>, w: usize, n: usize) -> Result<FpVar<F>, S
     is_neg.select(&q.negate()?, &q)
 }
 
-fn rshift_abs<F: PrimeField>(
+pub fn rshift_abs<F: PrimeField>(
     v: &FpVar<F>,
     w: usize,
     n: usize,
@@ -1107,21 +1104,19 @@ impl<F: PrimeField> BitDecompose<F> for FpVar<F> {
 
         let chunks = {
             let chunks = if table_size == 8 {
-                v
-                .into_bigint()
-                .to_bytes_le()
-                .into_iter()
-                .take(num_chunks)
-                .map(F::from)
-                .collect::<Vec<_>>()
+                v.into_bigint()
+                    .to_bytes_le()
+                    .into_iter()
+                    .take(num_chunks)
+                    .map(F::from)
+                    .collect::<Vec<_>>()
             } else {
-                v
-                .into_bigint()
-                .to_bits_le()
-                .chunks(table_size)
-                .take(num_chunks)
-                .map(|chunk| F::from_bigint(F::BigInt::from_bits_le(chunk)).unwrap())
-                .collect::<Vec<_>>()
+                v.into_bigint()
+                    .to_bits_le()
+                    .chunks(table_size)
+                    .take(num_chunks)
+                    .map(|chunk| F::from_bigint(F::BigInt::from_bits_le(chunk)).unwrap())
+                    .collect::<Vec<_>>()
             };
 
             Vec::<FpVar<_>>::new_variable(
@@ -1227,11 +1222,11 @@ impl<F: PrimeField> BitDecompose<F> for I64Var<F> {
         let chunks = {
             let chunks = if table_size == 8 {
                 (v as u64)
-                .to_le_bytes()
-                .into_iter()
-                .take(num_chunks)
-                .map(|i| i as i64)
-                .collect::<Vec<_>>()
+                    .to_le_bytes()
+                    .into_iter()
+                    .take(num_chunks)
+                    .map(|i| i as i64)
+                    .collect::<Vec<_>>()
             } else {
                 let mut chunks = vec![];
                 let mut v = v as u64;
@@ -1281,8 +1276,13 @@ impl<F: PrimeField> BitDecompose<F> for I64Var<F> {
         mode: BoundingMode,
         la: LookupArgumentRef<F>,
     ) -> Result<(), SynthesisError> {
-        let _ =
-            self.mac_enforce_bit_length::<false>(&I64Var::one(), &I64Var::zero(), length, mode, la)?;
+        let _ = self.mac_enforce_bit_length::<false>(
+            &I64Var::one(),
+            &I64Var::zero(),
+            length,
+            mode,
+            la,
+        )?;
         Ok(())
     }
 }

@@ -1,6 +1,6 @@
 use ark_crypto_primitives::sponge::Absorb;
 use ark_ec::CurveGroup;
-use ark_std::{cfg_into_iter, cfg_iter, end_timer, start_timer, Zero};
+use ark_std::{cfg_into_iter, cfg_iter, end_timer, start_timer};
 use icicle_cuda_runtime::memory::DeviceVec;
 use icicle_cuda_runtime::stream::CudaStream;
 use rayon::prelude::*;
@@ -10,7 +10,6 @@ use super::{CurrentInstance, CycleFoldCommittedInstance, RunningInstance, Witnes
 use crate::ccs::r1cs::R1CS;
 use crate::commitment::pedersen::Params;
 use crate::commitment::CommitmentScheme;
-use crate::transcript::Transcript;
 use crate::utils::vec::*;
 use crate::{Error, MSM, MVM};
 
@@ -164,7 +163,7 @@ where
         );
         end_timer!(timer);
 
-        Ok((cmT))
+        Ok(cmT)
     }
 
     pub fn compute_cyclefold_cmT(
@@ -308,17 +307,17 @@ where
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
-    use ark_ff::{BigInteger, PrimeField};
-    use ark_grumpkin::{Fr, Projective};
-    use ark_std::{ops::Mul, UniformRand};
-
     use crate::ccs::r1cs::tests::{get_test_r1cs, get_test_z};
     use crate::commitment::pedersen::{Params as PedersenParams, Pedersen};
     use crate::folding::nova::circuits::ChallengeGadget;
     use crate::folding::nova::traits::NovaR1CS;
     use crate::transcript::poseidon::poseidon_test_config;
     use crate::MVM;
+    use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
+    use ark_ff::{BigInteger, PrimeField};
+    use ark_grumpkin::{Fr, Projective};
+    use ark_std::{ops::Mul, UniformRand};
+    use num_traits::Zero;
 
     #[allow(clippy::type_complexity)]
     pub(crate) fn prepare_simple_fold_inputs<C>() -> (
@@ -462,7 +461,7 @@ pub mod tests {
     // fold 2 instances into one
     #[test]
     fn test_nifs_one_fold() {
-        let (pedersen_params, poseidon_config, r1cs, w1, ci1, w2, ci2, w3, ci3, E, T, cmT, _, r) =
+        let (pedersen_params, _, r1cs, w1, ci1, w2, ci2, w3, ci3, E, T, cmT, _, r) =
             prepare_simple_fold_inputs();
 
         // NIFS.V

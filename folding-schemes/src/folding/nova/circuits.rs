@@ -20,12 +20,10 @@ use ark_r1cs_std::{
     prelude::CurveVar,
     R1CSVar,
 };
-use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
+use ark_relations::r1cs::{ConstraintSystemRef, Namespace, SynthesisError};
 use ark_std::{add_to_trace, end_timer, fmt::Debug, start_timer, One, Zero};
 use core::{borrow::Borrow, marker::PhantomData};
 use icicle_cuda_runtime::{memory::DeviceVec, stream::CudaStream};
-use std::time::Instant;
-
 
 use super::{
     cyclefold::{
@@ -315,7 +313,10 @@ where
         u_i: &mut CurrentInstance<C>,
         cmT: &DeviceVec<<C::Config as MSM<C>>::R>,
         cmW: &Option<DeviceVec<<C::Config as MSM<C>>::R>>,
-    ) -> Result<(Vec<bool>, C), SynthesisError> where C::Config: MSM<C>, {
+    ) -> Result<(Vec<bool>, C), SynthesisError>
+    where
+        C::Config: MSM<C>,
+    {
         let mut sponge = PoseidonSponge::<C::ScalarField>::new(poseidon_config);
         let r;
         let input = vec![
@@ -330,17 +331,13 @@ where
             nonnative_affine_to_field_elements::<C>(u_i.cmQ),
             nonnative_affine_to_field_elements::<C>({
                 if let Some(cmW) = cmW {
-                    let cmW = <C::Config as MSM<C>>::retrieve_msm_result(
-                        stream_w, cmW,
-                    );
+                    let cmW = <C::Config as MSM<C>>::retrieve_msm_result(stream_w, cmW);
                     u_i.cmW = cmW;
                 }
                 u_i.cmW
             }),
             nonnative_affine_to_field_elements::<C>({
-                let cmT = <C::Config as MSM<C>>::retrieve_msm_result(
-                    stream_t, cmT,
-                );
+                let cmT = <C::Config as MSM<C>>::retrieve_msm_result(stream_t, cmT);
                 r = cmT;
                 r
             }),
@@ -767,11 +764,11 @@ where
             z_i1.clone(),
         )?;
         let x = FpVar::new_input(cs.clone(), || {
-            (if i_usize == 0 {
+            if i_usize == 0 {
                 u_i1_x_base.value()
             } else {
                 u_i1_x.value()
-            })
+            }
         })?;
         x.enforce_equal(&is_basecase.select(&u_i1_x_base, &u_i1_x)?)?;
 
@@ -783,11 +780,11 @@ where
             CycleFoldCommittedInstanceVar::<C2, GC2>::new_constant(cs.clone(), cf_u_dummy)?
                 .hash(&crh_params)?;
         let cf_x = FpVar::new_input(cs.clone(), || {
-            (if i_usize == 0 {
+            if i_usize == 0 {
                 cf_u_i1_x_base.value()
             } else {
                 cf_u_i1_x.value()
-            })
+            }
         })?;
         cf_x.enforce_equal(&is_basecase.select(&cf_u_i1_x_base, &cf_u_i1_x)?)?;
         end_timer!(timer);

@@ -1,6 +1,6 @@
 use ark_ec::CurveGroup;
 use ark_ff::Field;
-use ark_r1cs_std::{boolean::Boolean, groups::GroupOpsBounds, prelude::CurveVar};
+use ark_r1cs_std::{boolean::Boolean, prelude::CurveVar};
 use ark_relations::r1cs::SynthesisError;
 use ark_std::{end_timer, start_timer, Zero};
 use ark_std::{rand::RngCore, UniformRand};
@@ -91,8 +91,13 @@ where
         }
 
         let timer = start_timer!(|| "MSM on GPU");
-        let msm =
-            <C::Config as MSM<C>>::var_msm_precomputed(stream, &params.device_generators, &v, 0, None);
+        let msm = <C::Config as MSM<C>>::var_msm_precomputed(
+            stream,
+            &params.device_generators,
+            &v,
+            0,
+            None,
+        );
         end_timer!(timer);
         let msm = <C::Config as MSM<C>>::retrieve_msm_result(stream, &msm);
         // assert_eq!(msm, C::msm_unchecked(&params.generators[..v.len()], &v));

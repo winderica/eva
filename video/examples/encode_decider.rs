@@ -1,3 +1,8 @@
+#![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
+
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::marker::PhantomData;
@@ -14,23 +19,22 @@ use ark_std::{add_to_trace, end_timer, start_timer};
 use folding_schemes::CastSlice;
 use rand::thread_rng;
 use rayon::prelude::*;
-use std::time::Instant;
 use video::decider::{Decider, DeciderEthCircuit};
 use video::edit::constraints::NoOp;
 use video::utils::srs_size;
+use video::ExternalInputs;
 use video::{
     encode::{MacroblockType, Matrix},
     griffin::params::GriffinParams,
     EditEncodeCircuit, EncodeConfig,
 };
-use video::ExternalInputs;
 
 use ark_bn254::{constraints::GVar, Fq, Fr, G1Projective as Projective};
 use ark_ff::{BigInteger, PrimeField, UniformRand, Zero};
 use ark_grumpkin::{constraints::GVar as GVar2, Projective as Projective2};
 use folding_schemes::{
     commitment::pedersen::Pedersen, folding::nova::Nova,
-    transcript::poseidon::poseidon_test_config, Decider as _, FoldingScheme,
+    transcript::poseidon::poseidon_test_config, FoldingScheme,
 };
 
 type Op = NoOp;
@@ -80,9 +84,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rng = &mut thread_rng();
     let sk = Fq::rand(rng);
     let vk = Projective2::generator() * sk;
-
-    const W: usize = 1280;
-    const H: usize = 720;
 
     let F_circuit = EditEncodeCircuit {
         _e: PhantomData,

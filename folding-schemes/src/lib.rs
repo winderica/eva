@@ -314,7 +314,7 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
     fn var_msm(
         points: &[ark_bn254::G1Affine],
         scalars: &[ark_bn254::Fr],
-        offset: usize,
+        _offset: usize,
     ) -> ark_bn254::G1Projective {
         use icicle_core::msm::{self, MSMConfig};
         use icicle_core::traits::ArkConvertible;
@@ -357,11 +357,11 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
         stream: Option<&CudaStream>,
         points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
         scalars: &[ark_bn254::Fr],
-        offset: usize,
+        _offset: usize,
         bitsize: Option<usize>,
     ) -> DeviceVec<Self::R> {
         use icicle_core::msm::{self, MSMConfig};
-        use icicle_core::traits::ArkConvertible;
+
         use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice, HostSlice};
         let timer = start_timer!(|| "Start MSM over BN254");
         // let stream = CudaStream::create().expect("Failed to create CUDA stream");
@@ -395,10 +395,10 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
         stream: Option<&CudaStream>,
         points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
         scalars: &DeviceVec<ark_bn254::Fr>,
-        offset: usize,
+        _offset: usize,
     ) -> DeviceVec<Self::R> {
         use icicle_core::msm::{self, MSMConfig};
-        use icicle_core::traits::ArkConvertible;
+
         use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice};
         let timer = start_timer!(|| "Start MSM over BN254");
         // let stream = CudaStream::create().expect("Failed to create CUDA stream");
@@ -482,8 +482,6 @@ impl MSM<ark_bn254::G1Projective> for ark_bn254::g1::Config {
 
 impl MVM for ark_bn254::Fr {
     fn prepare_matrix(csr: &CSRSparseMatrix<ark_bn254::Fr>) -> HybridMatrix {
-        use icicle_core::ntt::FieldImpl;
-        use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
             device_context::{DeviceContext, DEFAULT_DEVICE_ID},
             memory::HostSlice,
@@ -520,11 +518,9 @@ impl MVM for ark_bn254::Fr {
         e: &DeviceVec<ark_bn254::Fr>,
         t: &mut DeviceVec<ark_bn254::Fr>,
     ) {
-        use icicle_core::ntt::FieldImpl;
-        use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
             device_context::{DeviceContext, DEFAULT_DEVICE_ID},
-            memory::{DeviceSlice, HostOrDeviceSlice, HostSlice},
+            memory::{DeviceSlice, HostSlice},
         };
 
         let mut ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
@@ -534,7 +530,9 @@ impl MVM for ark_bn254::Fr {
         }
 
         icicle_core::vec_ops::compute_t(
-            &a, &b, &c,
+            &a,
+            &b,
+            &c,
             HostSlice::from_slice(z1_u.cast::<icicle_bn254::curve::ScalarField>()),
             HostSlice::from_slice(z1_x.cast::<icicle_bn254::curve::ScalarField>()),
             HostSlice::from_slice(z1_wq.cast::<icicle_bn254::curve::ScalarField>()),
@@ -632,12 +630,12 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
     fn var_msm(
         points: &[ark_grumpkin::Affine],
         scalars: &[ark_grumpkin::Fr],
-        offset: usize,
+        _offset: usize,
     ) -> ark_grumpkin::Projective {
         use icicle_core::msm::{self, MSMConfig};
         use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
-            memory::{DeviceVec, HostOrDeviceSlice, HostSlice},
+            memory::{DeviceVec, HostSlice},
             stream::CudaStream,
         };
         let stream = CudaStream::create().expect("Failed to create CUDA stream");
@@ -675,11 +673,11 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
         stream: Option<&CudaStream>,
         points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
         scalars: &[ark_grumpkin::Fr],
-        offset: usize,
+        _offset: usize,
         bitsize: Option<usize>,
     ) -> DeviceVec<Self::R> {
         use icicle_core::msm::{self, MSMConfig};
-        use icicle_core::traits::ArkConvertible;
+
         use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice, HostSlice};
         let timer = start_timer!(|| "Start MSM over Grumpkin");
         // let stream = CudaStream::create().expect("Failed to create CUDA stream");
@@ -713,10 +711,10 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
         stream: Option<&CudaStream>,
         points: &icicle_cuda_runtime::memory::DeviceSlice<Self::T>,
         scalars: &DeviceVec<ark_grumpkin::Fr>,
-        offset: usize,
+        _offset: usize,
     ) -> DeviceVec<Self::R> {
         use icicle_core::msm::{self, MSMConfig};
-        use icicle_core::traits::ArkConvertible;
+
         use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice};
         let timer = start_timer!(|| "Start MSM over Grumpkin");
         // let stream = CudaStream::create().expect("Failed to create CUDA stream");
@@ -788,11 +786,7 @@ impl MSM<ark_grumpkin::Projective> for ark_grumpkin::GrumpkinConfig {
 }
 
 impl MVM for ark_grumpkin::Fr {
-    fn prepare_matrix(
-        csr: &CSRSparseMatrix<ark_grumpkin::Fr>,
-    ) -> HybridMatrix {
-        use icicle_core::ntt::FieldImpl;
-        use icicle_core::traits::ArkConvertible;
+    fn prepare_matrix(csr: &CSRSparseMatrix<ark_grumpkin::Fr>) -> HybridMatrix {
         use icicle_cuda_runtime::{
             device_context::{DeviceContext, DEFAULT_DEVICE_ID},
             memory::HostSlice,
@@ -829,11 +823,9 @@ impl MVM for ark_grumpkin::Fr {
         e: &DeviceVec<ark_grumpkin::Fr>,
         t: &mut DeviceVec<ark_grumpkin::Fr>,
     ) {
-        use icicle_core::ntt::FieldImpl;
-        use icicle_core::traits::ArkConvertible;
         use icicle_cuda_runtime::{
             device_context::{DeviceContext, DEFAULT_DEVICE_ID},
-            memory::{DeviceSlice, HostOrDeviceSlice, HostSlice},
+            memory::{DeviceSlice, HostSlice},
         };
 
         let mut ctx = DeviceContext::default_for_device(DEFAULT_DEVICE_ID);
@@ -843,7 +835,9 @@ impl MVM for ark_grumpkin::Fr {
         }
 
         icicle_core::vec_ops::compute_t(
-            &a, &b, &c,
+            &a,
+            &b,
+            &c,
             HostSlice::from_slice(z1_u.cast::<icicle_grumpkin::curve::ScalarField>()),
             HostSlice::from_slice(z1_x.cast::<icicle_grumpkin::curve::ScalarField>()),
             HostSlice::from_slice(z1_wq.cast::<icicle_grumpkin::curve::ScalarField>()),
@@ -943,12 +937,6 @@ mod tests {
     use folding::nova::get_r1cs_from_cs;
     use folding::nova::nifs::NIFS;
     use icicle_core::traits::ArkConvertible;
-    use icicle_core::{
-        curve::Curve,
-        msm::{self, MSMConfig}
-        ,
-    };
-    use icicle_cuda_runtime::memory::{HostOrDeviceSlice, HostSlice};
     use rand::thread_rng;
 
     use crate::utils::vec::{vec_add, vec_sub};
@@ -965,7 +953,7 @@ mod tests {
             points.extend_from_within(..);
         }
         let points_precomputed = ark_bn254::g1::Config::precompute(&points);
-        for i in 0..5 {
+        for _ in 0..5 {
             let mut scalars: Vec<ark_bn254::Fr> =
                 (0..m).map(|_| ark_bn254::Fr::rand(rng)).collect();
             scalars[1] = ark_bn254::Fr::zero();

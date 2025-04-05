@@ -3,7 +3,7 @@ use ark_crypto_primitives::sponge::{
     poseidon::{constraints::PoseidonSpongeVar, PoseidonConfig, PoseidonSponge},
     Absorb, CryptographicSponge,
 };
-use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
+use ark_ec::{AffineRepr, CurveGroup};
 use ark_ff::{BigInteger, Field, PrimeField};
 use ark_r1cs_std::{boolean::Boolean, fields::fp::FpVar};
 use ark_relations::r1cs::{ConstraintSystemRef, SynthesisError};
@@ -144,6 +144,7 @@ pub fn poseidon_test_config<F: PrimeField>() -> PoseidonConfig<F> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+    use ark_ec::PrimeGroup;
     use ark_pallas::{constraints::GVar, Fq, Fr, Projective};
     use ark_r1cs_std::{alloc::AllocVar, groups::CurveVar, R1CSVar};
     use ark_relations::r1cs::ConstraintSystem;

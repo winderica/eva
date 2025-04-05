@@ -31,8 +31,11 @@ pub struct CSRSparseMatrix<F> {
 }
 
 impl<F: PrimeField> SparseMatrix<F> {
-    pub fn new(n_rows: usize, n_cols: usize, coeffs: Vec<Vec<(F, usize)>>) -> Self where F: MVM {
-        let csr = Self::to_csr(n_rows, n_cols, &coeffs);
+    pub fn new(n_rows: usize, n_cols: usize, coeffs: Vec<Vec<(F, usize)>>) -> Self
+    where
+        F: MVM,
+    {
+        let csr = Self::to_csr(&coeffs);
         SparseMatrix {
             cuda: MVM::prepare_matrix(&csr),
             n_rows,
@@ -51,7 +54,7 @@ impl<F: PrimeField> SparseMatrix<F> {
         r
     }
 
-    pub fn to_csr(n_rows: usize, n_cols: usize, coeffs: &[Vec<(F, usize)>]) -> CSRSparseMatrix<F> {
+    pub fn to_csr(coeffs: &[Vec<(F, usize)>]) -> CSRSparseMatrix<F> {
         let mut data = coeffs
             .iter()
             .flat_map(|row| row.iter().map(|(v, _)| *v))

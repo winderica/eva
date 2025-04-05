@@ -18,7 +18,6 @@ use ark_r1cs_std::{
     convert::ToConstraintFieldGadget,
     eq::EqGadget,
     fields::{fp::FpVar, FieldVar},
-    groups::GroupOpsBounds,
     prelude::CurveVar,
 };
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace, SynthesisError};
@@ -27,7 +26,6 @@ use ark_std::{One, Zero};
 use core::{borrow::Borrow, marker::PhantomData};
 use icicle_cuda_runtime::memory::DeviceVec;
 use icicle_cuda_runtime::stream::CudaStream;
-
 
 use super::circuits::CF2;
 use super::CycleFoldCommittedInstance;

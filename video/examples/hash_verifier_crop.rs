@@ -34,12 +34,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut e1 = vec![];
     let mut e2 = vec![];
     for i in 0..W / 16 * H / 16 * N / blocks_per_step {
-        let should_keeps = (i * blocks_per_step..(i + 1) * blocks_per_step).map(|v| {
-            let tt = v % (W / 16 * H / 16);
-            let xx = tt % (W / 16) * 16;
-            let yy = tt / (W / 16) * 16;
-            xx >= x && xx < (x + WW) && yy >= y && yy < (y + HH)
-        }).collect::<Vec<_>>();
+        let should_keeps = (i * blocks_per_step..(i + 1) * blocks_per_step)
+            .map(|v| {
+                let tt = v % (W / 16 * H / 16);
+                let xx = tt % (W / 16) * 16;
+                let yy = tt / (W / 16) * 16;
+                xx >= x && xx < (x + WW) && yy >= y && yy < (y + HH)
+            })
+            .collect::<Vec<_>>();
         if should_keeps.contains(&true) {
             for should_keep in &should_keeps {
                 if *should_keep {

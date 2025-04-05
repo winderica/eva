@@ -8,14 +8,13 @@ use std::{
     fs::File,
     io::{BufReader, Read},
     marker::PhantomData,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::Arc,
-    time::Instant,
 };
 
 use crate::encode::traits::CastSlice;
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::PrimeField;
 use ark_r1cs_std::{
     alloc::AllocVar,
     boolean::{AllocatedBool, Boolean},
@@ -26,8 +25,7 @@ use ark_r1cs_std::{
     R1CSVar,
 };
 use ark_relations::r1cs::{
-    ConstraintSystem, ConstraintSystemRef, LinearCombination, SynthesisError
-    , Variable,
+    ConstraintSystem, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
 };
 use ark_std::{end_timer, start_timer};
 use edit::constraints::{EditConfig, EditConfigVar, EditGadget};
@@ -169,8 +167,8 @@ impl<F: PrimeField + Absorb, E: EditGadget> EditEncodeCircuit<F, E> {
         let is_intra = Boolean::new_witness(cs.clone(), || Ok(encode_config.slice_is_intra))?;
 
         let base_offset = is_intra.select(
-            &I64Var::constant((BASE_OFFSET_I_SLICE)),
-            &I64Var::constant((BASE_OFFSET_BP_SLICE)),
+            &I64Var::constant(BASE_OFFSET_I_SLICE),
+            &I64Var::constant(BASE_OFFSET_BP_SLICE),
         )?;
         let offset = &base_offset * &two_to_qp_over_6 * (1 << (Q_BITS_4 - OFFSET_BITS));
         let offset_c = &base_offset * &two_to_qpc_over_6 * (1 << (Q_BITS_4 - OFFSET_BITS));
@@ -408,7 +406,7 @@ impl<F: PrimeField + Absorb, E: EditGadget> FCircuit<F> for EditEncodeCircuit<F,
     /// z_{i+1}
     fn step_native(
         &self,
-        i: usize,
+        _i: usize,
         z_i: Vec<F>,
         external_inputs: &Self::ExternalInputs,
     ) -> Result<Vec<F>, Error> {
@@ -509,7 +507,7 @@ impl<F: PrimeField + Absorb, E: EditGadget> FCircuit<F> for EditEncodeCircuit<F,
         &self,
         cs: ConstraintSystemRef<F>,
         la: LookupArgumentRef<F>,
-        i: usize,
+        _i: usize,
         z_i: Vec<FpVar<F>>,
         external_inputs: &Self::ExternalInputs,
     ) -> Result<Vec<FpVar<F>>, SynthesisError> {
@@ -975,10 +973,8 @@ pub mod tests {
         RemovingCfg,
     };
     use folding_schemes::{
-        commitment::{pedersen::Pedersen, CommitmentScheme},
-        folding::nova::Nova,
-        transcript::poseidon::poseidon_test_config,
-        FoldingScheme,
+        commitment::pedersen::Pedersen, folding::nova::Nova,
+        transcript::poseidon::poseidon_test_config, FoldingScheme,
     };
     use ndarray::Array2;
     use rand::thread_rng;
@@ -1006,7 +1002,7 @@ pub mod tests {
         >;
 
         println!("Prepare Nova ProverParams & VerifierParams");
-        let (pk, vk) = NOVA::preprocess(
+        let (pk, _) = NOVA::preprocess(
             &poseidon_test_config(),
             &F_circuit,
             &mut thread_rng(),
@@ -1026,8 +1022,6 @@ pub mod tests {
 
     #[test]
     fn test_noop() -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman"),
@@ -1116,8 +1110,6 @@ pub mod tests {
 
     #[test]
     fn test_bright() -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman_bright"),
@@ -1206,8 +1198,6 @@ pub mod tests {
 
     #[test]
     fn test_gray() -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman_gray"),
@@ -1296,8 +1286,6 @@ pub mod tests {
 
     #[test]
     fn test_inv() -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman_inv"),
@@ -1510,7 +1498,7 @@ pub mod tests {
         const W: usize = 352;
         const H: usize = 288;
 
-        let (mut blocks, mut predictions, mut outputs, mut configs) = parse_prover_data(
+        let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman_cut"),
             None,
@@ -1903,20 +1891,13 @@ pub mod tests {
 #[cfg(test)]
 pub mod benches {
     extern crate test;
-    use std::{
-        env,
-        error::Error
-
-        ,
-        path::Path
-        ,
-    };
+    use std::{env, error::Error, path::Path};
 
     use super::*;
     use ark_bn254::{constraints::GVar, Fq, Fr, G1Projective as Projective};
     use ark_crypto_primitives::crh::{poseidon::CRH, CRHScheme};
     use ark_ec::{AffineRepr, CurveGroup, PrimeGroup};
-    use ark_ff::{UniformRand, Zero};
+    use ark_ff::{BigInteger, UniformRand, Zero};
     use ark_grumpkin::{constraints::GVar as GVar2, Projective as Projective2};
     use ark_relations::r1cs::ConstraintSystem;
     use edit::constraints::{
@@ -1925,12 +1906,9 @@ pub mod benches {
     };
     use folding_schemes::{
         ccs::r1cs::extract_r1cs,
-        commitment::{pedersen::Pedersen, CommitmentScheme},
-        folding::nova::{
-            circuits::AugmentedFCircuit, nifs::NIFS, Nova,
-        },
-        transcript::poseidon::poseidon_test_config
-        ,
+        commitment::pedersen::Pedersen,
+        folding::nova::{circuits::AugmentedFCircuit, nifs::NIFS, Nova},
+        transcript::poseidon::poseidon_test_config,
         FoldingScheme, MVM,
     };
     use ndarray::Array2;
@@ -2062,12 +2040,20 @@ pub mod benches {
         let tmp_e = ark_bn254::Fr::alloc_vec(r1cs.A.n_rows);
 
         b.iter(|| {
-            Fr::compute_t(None, &r1cs.A.cuda, &r1cs.B.cuda, &r1cs.C.cuda,             &z1[..1],
-                          &z1[1..1 + r1cs.l],
-                          &z1[1 + r1cs.l..],
-                          &z2[..1],
-                          &z2[1..1 + r1cs.l],
-                          &z2[1 + r1cs.l..], &tmp_e, &mut t);
+            Fr::compute_t(
+                None,
+                &r1cs.A.cuda,
+                &r1cs.B.cuda,
+                &r1cs.C.cuda,
+                &z1[..1],
+                &z1[1..1 + r1cs.l],
+                &z1[1 + r1cs.l..],
+                &z2[..1],
+                &z2[1..1 + r1cs.l],
+                &z2[1 + r1cs.l..],
+                &tmp_e,
+                &mut t,
+            );
         });
 
         Ok(())
@@ -2075,8 +2061,6 @@ pub mod benches {
 
     #[bench]
     fn bench_step_block(b: &mut test::Bencher) -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman"),
@@ -2141,8 +2125,6 @@ pub mod benches {
 
     #[bench]
     fn bench_step_noop(b: &mut test::Bencher) -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman"),
@@ -2207,8 +2189,6 @@ pub mod benches {
 
     #[bench]
     fn bench_step_bright(b: &mut test::Bencher) -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman_bright"),
@@ -2273,8 +2253,6 @@ pub mod benches {
 
     #[bench]
     fn bench_step_gray(b: &mut test::Bencher) -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman_gray"),
@@ -2339,8 +2317,6 @@ pub mod benches {
 
     #[bench]
     fn bench_step_inv(b: &mut test::Bencher) -> Result<(), Box<dyn Error>> {
-        const W: usize = 352;
-        const H: usize = 288;
         let (blocks, predictions, outputs, configs) = parse_prover_data(
             Path::new(env!("DATA_PATH")).join("foreman"),
             Path::new(env!("DATA_PATH")).join("foreman_inv"),

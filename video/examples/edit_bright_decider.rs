@@ -1,3 +1,8 @@
+#![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
+
 use std::marker::PhantomData;
 use std::{path::Path, sync::Arc};
 
@@ -42,9 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rng = &mut thread_rng();
     let sk = Fq::rand(rng);
     let vk = Projective2::generator() * sk;
-
-    const W: usize = 352;
-    const H: usize = 288;
 
     let (blocks, predictions, outputs, configs) = parse_prover_data(
         Path::new(env!("DATA_PATH")).join("foreman"),

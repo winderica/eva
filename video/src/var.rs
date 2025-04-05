@@ -1,4 +1,4 @@
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::PrimeField;
 use ark_relations::{
     lc,
     r1cs::{ConstraintSystemRef, Namespace, SynthesisError, Variable},
@@ -11,7 +11,7 @@ use ark_r1cs_std::{
     boolean::AllocatedBool,
     fields::{
         fp::{AllocatedFp, FpVar},
-        FieldOpsBounds, FieldVar,
+        FieldOpsBounds,
     },
     impl_bounded_ops, impl_ops,
     prelude::*,

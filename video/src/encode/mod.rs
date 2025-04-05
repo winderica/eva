@@ -4,29 +4,20 @@ pub mod traits;
 
 use constants::*;
 
-use std::borrow::{Borrow, BorrowMut};
 use std::ops::{Deref, Index, IndexMut};
 
-use ark_ff::{BigInteger, Field, Fp, FpConfig, One, PrimeField, Zero};
-use ark_r1cs_std::alloc::AllocVar;
-use ark_r1cs_std::boolean::Boolean;
-use ark_r1cs_std::eq::EqGadget;
-use ark_r1cs_std::fields::fp::FpVar;
-use ark_r1cs_std::{fields::FieldVar, R1CSVar};
-use ark_relations::r1cs::ConstraintSynthesizer;
-use ark_std::iterable::Iterable;
+use ark_ff::{Fp, FpConfig, PrimeField, Zero};
 use ndarray::{array, s, Array2};
 use num_bigint::BigUint;
 use num_traits::ToPrimitive;
-use rayon::prelude::*;
 
-struct QuantParam {
+pub struct QuantParam {
     offset: u64,
     scale: u64,
 }
 
 impl QuantParam {
-    fn new(offset: u64, scale: u64) -> Self {
+    pub fn new(offset: u64, scale: u64) -> Self {
         Self { offset, scale }
     }
 }
@@ -214,7 +205,7 @@ impl<const M: usize, const N: usize> Matrix<i16, M, N> {
         }
     }
 
-    fn hadamard_quant(&self, qp_over_6: usize, param: &QuantParam) -> Self {
+    pub fn hadamard_quant(&self, qp_over_6: usize, param: &QuantParam) -> Self {
         match (M, N) {
             (4, 4) => {
                 let t = array![[1, 1, 1, 1], [1, 1, -1, -1], [1, -1, -1, 1], [1, -1, 1, -1],];
@@ -250,7 +241,7 @@ impl<const M: usize, const N: usize> Matrix<i16, M, N> {
         }
     }
 
-    fn quant(&self, qp_over_6: usize, params: &[QuantParam], ac_only: bool) -> Self {
+    pub fn quant(&self, qp_over_6: usize, params: &[QuantParam], ac_only: bool) -> Self {
         let q_bits = match (M, N) {
             (4, 4) => Q_BITS_4,
             (8, 8) => Q_BITS_8,
@@ -317,7 +308,7 @@ impl Matrix<i16, 16, 16> {
             .map(|(a, b)| a - b)
             .collect::<Self>();
 
-        let offset = (base_offset << (qp_over_6 + Q_BITS_4 - OFFSET_BITS));
+        let offset = base_offset << (qp_over_6 + Q_BITS_4 - OFFSET_BITS);
         let scale0 = [13107, 11916, 10082, 9362, 8192, 7282][qp_mod_6];
         let scale1 = [8066, 7490, 6554, 5825, 5243, 4559][qp_mod_6];
         let scale2 = [5243, 4660, 4194, 3647, 3355, 2893][qp_mod_6];
@@ -403,7 +394,7 @@ impl Matrix<i16, 8, 8> {
     pub fn encode_chroma(
         &self,
         pred: &Self,
-        is_i16x16: bool,
+        _is_i16x16: bool,
         is_intra_slice: bool,
         qp: usize,
     ) -> Self {
@@ -421,7 +412,7 @@ impl Matrix<i16, 8, 8> {
             .map(|(a, b)| a - b)
             .collect::<Self>();
 
-        let offset = (base_offset << (qp_over_6 + Q_BITS_4 - OFFSET_BITS));
+        let offset = base_offset << (qp_over_6 + Q_BITS_4 - OFFSET_BITS);
         let scale0 = [13107, 11916, 10082, 9362, 8192, 7282][qp_mod_6];
         let scale1 = [8066, 7490, 6554, 5825, 5243, 4559][qp_mod_6];
         let scale2 = [5243, 4660, 4194, 3647, 3355, 2893][qp_mod_6];
@@ -493,10 +484,14 @@ pub mod tests {
     use self::traits::CastSlice;
     use super::*;
     use ark_pallas::Fr;
+    use ark_r1cs_std::boolean::Boolean;
+    use ark_r1cs_std::eq::EqGadget;
+    use ark_r1cs_std::fields::fp::FpVar;
     use ark_r1cs_std::{alloc::AllocVar, R1CSVar};
     use ark_relations::r1cs::ConstraintSystem;
     use folding_schemes::frontend::LookupArgument;
     use rand::{thread_rng, Rng};
+    use rayon::prelude::*;
     use std::error::Error;
     use std::fs::File;
     use std::io::{BufReader, Read};
@@ -674,26 +669,16 @@ pub mod tests {
     fn test() -> Result<(), Box<dyn Error>> {
         let path = Path::new(env!("DATA_PATH")).join("bunny2");
 
-        let mut type_reader =
-            BufReader::new(File::open(path.join("type_enc")).unwrap());
-        let mut orig_y_reader =
-            BufReader::new(File::open(path.join("orig_y_enc")).unwrap());
-        let mut orig_u_reader =
-            BufReader::new(File::open(path.join("orig_u_enc")).unwrap());
-        let mut orig_v_reader =
-            BufReader::new(File::open(path.join("orig_v_enc")).unwrap());
-        let mut pred_y_reader =
-            BufReader::new(File::open(path.join("pred_y_enc")).unwrap());
-        let mut pred_u_reader =
-            BufReader::new(File::open(path.join("pred_u_enc")).unwrap());
-        let mut pred_v_reader =
-            BufReader::new(File::open(path.join("pred_v_enc")).unwrap());
-        let mut result_y_reader =
-            BufReader::new(File::open(path.join("coeff_y_enc")).unwrap());
-        let mut result_u_reader =
-            BufReader::new(File::open(path.join("coeff_u_enc")).unwrap());
-        let mut result_v_reader =
-            BufReader::new(File::open(path.join("coeff_v_enc")).unwrap());
+        let mut type_reader = BufReader::new(File::open(path.join("type_enc")).unwrap());
+        let mut orig_y_reader = BufReader::new(File::open(path.join("orig_y_enc")).unwrap());
+        let mut orig_u_reader = BufReader::new(File::open(path.join("orig_u_enc")).unwrap());
+        let mut orig_v_reader = BufReader::new(File::open(path.join("orig_v_enc")).unwrap());
+        let mut pred_y_reader = BufReader::new(File::open(path.join("pred_y_enc")).unwrap());
+        let mut pred_u_reader = BufReader::new(File::open(path.join("pred_u_enc")).unwrap());
+        let mut pred_v_reader = BufReader::new(File::open(path.join("pred_v_enc")).unwrap());
+        let mut result_y_reader = BufReader::new(File::open(path.join("coeff_y_enc")).unwrap());
+        let mut result_u_reader = BufReader::new(File::open(path.join("coeff_u_enc")).unwrap());
+        let mut result_v_reader = BufReader::new(File::open(path.join("coeff_v_enc")).unwrap());
 
         let mut orig_y = [0; 256];
         let mut orig_u = [0; 64];
@@ -766,12 +751,12 @@ pub mod tests {
             let qpc = types[5] as usize;
             let coeff_y = orig_y
                 .iter()
-                .map(|i| i as i16)
+                .map(|&i| i as i16)
                 .collect::<Matrix<i16, 16, 16>>()
                 .encode_luma_4x4(
                     &pred_y
                         .iter()
-                        .map(|i| i as i16)
+                        .map(|&i| i as i16)
                         .collect::<Matrix<i16, 16, 16>>(),
                     mb_type == MacroblockType::I16x16,
                     is_i_slice,
@@ -779,12 +764,12 @@ pub mod tests {
                 );
             let coeff_u = orig_u
                 .iter()
-                .map(|i| i as i16)
+                .map(|&i| i as i16)
                 .collect::<Matrix<i16, 8, 8>>()
                 .encode_chroma(
                     &pred_u
                         .iter()
-                        .map(|i| i as i16)
+                        .map(|&i| i as i16)
                         .collect::<Matrix<i16, 8, 8>>(),
                     mb_type == MacroblockType::I16x16,
                     is_i_slice,
@@ -792,12 +777,12 @@ pub mod tests {
                 );
             let coeff_v = orig_v
                 .iter()
-                .map(|i| i as i16)
+                .map(|&i| i as i16)
                 .collect::<Matrix<i16, 8, 8>>()
                 .encode_chroma(
                     &pred_v
                         .iter()
-                        .map(|i| i as i16)
+                        .map(|&i| i as i16)
                         .collect::<Matrix<i16, 8, 8>>(),
                     mb_type == MacroblockType::I16x16,
                     is_i_slice,
@@ -882,10 +867,10 @@ pub mod tests {
             .for_each(
                 |(
                     i,
-                    ((
+                    (
                         ((types, (orig_y, (orig_u, orig_v))), (pred_y, (pred_u, pred_v))),
                         (result_y, (result_u, result_v)),
-                    )),
+                    ),
                 )| {
                     let cs = ConstraintSystem::<Fr>::new_ref();
                     let la = LookupArgument::new_ref();
@@ -908,26 +893,26 @@ pub mod tests {
                     let is_i_slice = types[0] == 2;
 
                     let two_to_qp_over_6 =
-                        I64Var::new_witness(cs.clone(), || Ok((1 << (qp / 6)))).unwrap();
+                        I64Var::new_witness(cs.clone(), || Ok(1 << (qp / 6))).unwrap();
                     let two_to_qpc_over_6 =
-                        I64Var::new_witness(cs.clone(), || Ok((1 << (qpc / 6)))).unwrap();
+                        I64Var::new_witness(cs.clone(), || Ok(1 << (qpc / 6))).unwrap();
 
                     let scale = (
-                        I64Var::new_witness(cs.clone(), || Ok((scales[0][qp % 6]))).unwrap(),
-                        I64Var::new_witness(cs.clone(), || Ok((scales[1][qp % 6]))).unwrap(),
-                        I64Var::new_witness(cs.clone(), || Ok((scales[2][qp % 6]))).unwrap(),
+                        I64Var::new_witness(cs.clone(), || Ok(scales[0][qp % 6])).unwrap(),
+                        I64Var::new_witness(cs.clone(), || Ok(scales[1][qp % 6])).unwrap(),
+                        I64Var::new_witness(cs.clone(), || Ok(scales[2][qp % 6])).unwrap(),
                     );
                     let scalec = (
-                        I64Var::new_witness(cs.clone(), || Ok((scales[0][qpc % 6]))).unwrap(),
-                        I64Var::new_witness(cs.clone(), || Ok((scales[1][qpc % 6]))).unwrap(),
-                        I64Var::new_witness(cs.clone(), || Ok((scales[2][qpc % 6]))).unwrap(),
+                        I64Var::new_witness(cs.clone(), || Ok(scales[0][qpc % 6])).unwrap(),
+                        I64Var::new_witness(cs.clone(), || Ok(scales[1][qpc % 6])).unwrap(),
+                        I64Var::new_witness(cs.clone(), || Ok(scales[2][qpc % 6])).unwrap(),
                     );
 
                     let base_offset = Boolean::new_witness(cs.clone(), || Ok(is_i_slice))
                         .unwrap()
                         .select(
-                            &I64Var::constant((BASE_OFFSET_I_SLICE)),
-                            &I64Var::constant((BASE_OFFSET_BP_SLICE)),
+                            &I64Var::constant(BASE_OFFSET_I_SLICE),
+                            &I64Var::constant(BASE_OFFSET_BP_SLICE),
                         )
                         .unwrap();
                     let offset = &base_offset * &two_to_qp_over_6 * (1 << (Q_BITS_4 - OFFSET_BITS));
@@ -1107,84 +1092,5 @@ pub mod tests {
         }
 
         Ok(())
-    }
-
-    #[test]
-    fn test_quant() {
-        let s = [0.625, 0.6875, 0.8125, 0.875, 1., 1.125];
-        let mm = [0.25, 0.1, 0.25 * 0.4_f64.sqrt()]
-            .iter()
-            .flat_map(|i| s.map(|j| (1 << 15) as f64 * i / j))
-            .collect::<Vec<_>>();
-        let m = [
-            13107, 11916, 10082, 9362, 8192, 7282, 5243, 4660, 4194, 3647, 3355, 2893, 8066, 7490,
-            6554, 5825, 5243, 4559,
-        ];
-        let v = [
-            10, 11, 13, 14, 16, 18, 16, 18, 20, 23, 25, 29, 13, 14, 16, 18, 20, 23,
-        ];
-        for j in 0..3 {
-            for t in [682, 342] {
-                for pq in 0..52 {
-                    let q = pq / 6;
-                    let r = pq % 6;
-                    let f = t << (4 + q);
-                    for i in -5000i32..5000 {
-                        let x = if i > 0 {
-                            ((i >> 1) * m[0] + 2 * f) >> (16 + q)
-                        } else {
-                            -((-(i >> 1) * m[0] + 2 * f) >> (16 + q))
-                        };
-                        let y = if i > 0 {
-                            let a = (i * m[0] + 4 * f - (i % 2) * m[0]) >> (17 + q);
-                            let b = (i * m[0] + 4 * f - (i % 2) * m[0]) - (a << (17 + q));
-                            let c = (i * m[0] + 4 * f - (1 - i % 2) * m[0]) >> (17 + q);
-                            let d = (i * m[0] + 4 * f - (1 - i % 2) * m[0]) - (c << (17 + q));
-                            assert_eq!(b % 2, 0);
-                            assert_eq!(d % 2, 1);
-                            a
-                        } else {
-                            let a = (-(i - ((-i) % 2)) * m[0] + 4 * f) >> (17 + q);
-                            let b = (-(i - ((-i) % 2)) * m[0] + 4 * f) - (a << (17 + q));
-                            let c = (-(i - (1 - (-i) % 2)) * m[0] + 4 * f) >> (17 + q);
-                            let d = (-(i - (1 - (-i) % 2)) * m[0] + 4 * f) - (c << (17 + q));
-                            assert_eq!(b % 2, 0);
-                            assert_eq!(d % 2, 1);
-                            -a
-                        };
-                        if x != y {
-                            println!("{} {} {} {} {} {}", i, x, y, f, q, r);
-                        }
-                    }
-                }
-            }
-        }
-
-        // let aaa = is_neg.select(&q.negate()?, &q)?.value()?;
-        // let bbb = two_to_qp_over_6.value()? * {
-        //     let j = {
-        //         let v = qp_mod_6.value()?;
-        //         (v[0] as usize) * 4 + (v[1] as usize) * 2 + (v[2] as usize)
-        //     };
-        //     match i {
-        //         0 | 2 | 8 | 10 => F::from([10, 11, 13, 14, 16, 18][j]),
-        //         5 | 7 | 13 | 15 => F::from([16, 18, 20, 23, 25, 29][j]),
-        //         _ => F::from([13, 14, 16, 18, 20, 23][j]),
-        //     }
-        // };
-        // for i in [
-        //     vvv,
-        //     aaa * bbb,
-        //     (aaa - F::from(1)) * bbb,
-        //     (aaa + F::from(1)) * bbb,
-        // ] {
-        //     let u = i.into_bigint();
-        //     if u < F::MODULUS_MINUS_ONE_DIV_TWO {
-        //         print!("{} ", u);
-        //     } else {
-        //         print!("-{} ", (-i));
-        //     }
-        // }
-        // println!();
     }
 }

@@ -1,3 +1,8 @@
+#![allow(non_snake_case)]
+#![allow(non_upper_case_globals)]
+#![allow(non_camel_case_types)]
+#![allow(clippy::upper_case_acronyms)]
+
 use std::marker::PhantomData;
 use std::{path::Path, sync::Arc};
 
@@ -46,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     const W: usize = 352;
     const H: usize = 288;
 
-    let (mut blocks, mut predictions, mut outputs, mut configs) = parse_prover_data(
+    let (blocks, predictions, outputs, configs) = parse_prover_data(
         Path::new(env!("DATA_PATH")).join("foreman"),
         Path::new(env!("DATA_PATH")).join("foreman_cut"),
         None,

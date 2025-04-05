@@ -48,7 +48,12 @@ impl<F: PrimeField> GriffinParams<F> {
 
         let mut shake = Self::init_shake();
 
-        let d_inv = Self::calculate_d_inv(d as u64).to_radix_be(2).into_iter().map(|i| i != 0).skip_while(|i| !i).collect();
+        let d_inv = Self::calculate_d_inv(d as u64)
+            .to_radix_be(2)
+            .into_iter()
+            .map(|i| i != 0)
+            .skip_while(|i| !i)
+            .collect();
         let round_constants = Self::instantiate_rc(t, rounds, &mut shake);
         let alpha_beta = Self::instantiate_alpha_beta(t, &mut shake);
 

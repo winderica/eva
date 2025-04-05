@@ -13,11 +13,7 @@ use crate::Error;
 use ark_ff::{batch_inversion, PrimeField};
 use ark_r1cs_std::{
     alloc::AllocVar,
-    fields::{
-        fp::{AllocatedFp, FpVar},
-        FieldVar,
-    },
-    R1CSVar,
+    fields::fp::{AllocatedFp, FpVar},
 };
 use ark_relations::{
     lc,
@@ -64,7 +60,7 @@ impl<F: PrimeField> Hasher for NoHashHasher<F> {
     }
 
     #[inline]
-    fn write_usize(&mut self, i: usize) {}
+    fn write_usize(&mut self, _i: usize) {}
 
     #[inline]
     fn finish(&self) -> u64 {
@@ -169,7 +165,7 @@ impl<F: PrimeField> LookupArgument<F> {
         cs: ConstraintSystemRef<F>,
         c: &AllocatedFp<F>,
     ) -> Result<LinearCombination<F>, SynthesisError> {
-        let mut cs = cs.borrow_mut().unwrap();
+        let cs = cs.borrow_mut().unwrap();
 
         let num_query_variables = cs.num_committed_variables - self.table.len();
 
@@ -359,7 +355,12 @@ pub mod tests {
         fn state_len(&self) -> usize {
             1
         }
-        fn step_native(&self, _i: usize, z_i: Vec<F>, _: &Self::ExternalInputs) -> Result<Vec<F>, Error> {
+        fn step_native(
+            &self,
+            _i: usize,
+            z_i: Vec<F>,
+            _: &Self::ExternalInputs,
+        ) -> Result<Vec<F>, Error> {
             Ok(vec![z_i[0] * z_i[0] * z_i[0] + z_i[0] + F::from(5_u32)])
         }
         fn generate_step_constraints(
@@ -398,7 +399,12 @@ pub mod tests {
         fn state_len(&self) -> usize {
             1
         }
-        fn step_native(&self, _i: usize, z_i: Vec<F>, _: &Self::ExternalInputs) -> Result<Vec<F>, Error> {
+        fn step_native(
+            &self,
+            _i: usize,
+            z_i: Vec<F>,
+            _: &Self::ExternalInputs,
+        ) -> Result<Vec<F>, Error> {
             let mut z_i1 = F::one();
             for _ in 0..self.n_constraints - 1 {
                 z_i1 *= z_i[0];
@@ -411,7 +417,7 @@ pub mod tests {
             _la: LookupArgumentRef<F>,
             _i: usize,
             z_i: Vec<FpVar<F>>,
-            _: &Self::ExternalInputs
+            _: &Self::ExternalInputs,
         ) -> Result<Vec<FpVar<F>>, SynthesisError> {
             let mut z_i1 = FpVar::<F>::new_witness(cs.clone(), || Ok(F::one()))?;
             for _ in 0..self.n_constraints - 1 {
@@ -449,7 +455,7 @@ pub mod tests {
                 LookupArgument::new_ref(),
                 0,
                 z_i.clone(),
-                &()
+                &(),
             )?;
 
             computed_z_i1.enforce_equal(&z_i1)?;

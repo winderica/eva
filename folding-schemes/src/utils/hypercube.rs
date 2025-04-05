@@ -2,7 +2,6 @@
 use crate::utils::virtual_polynomial::bit_decompose;
 use ark_ff::PrimeField;
 
-
 use std::marker::PhantomData;
 
 /// A boolean hypercube that returns its points as an iterator

@@ -1,16 +1,13 @@
-/// This file implements the onchain (Ethereum's EVM) decider.
-use ark_bn254::Bn254;
 use ark_crypto_primitives::crh::poseidon::constraints::CRHGadget;
 use ark_crypto_primitives::crh::CRHSchemeGadget;
 use ark_crypto_primitives::sponge::Absorb;
-use ark_ec::{AffineRepr, CurveGroup};
+use ark_ec::CurveGroup;
 use ark_ff::{BigInteger, PrimeField};
 use ark_r1cs_std::{convert::ToConstraintFieldGadget, groups::GroupOpsBounds, prelude::CurveVar};
 use ark_snark::SNARK;
 use ark_std::rand::{CryptoRng, RngCore};
-use ark_std::{One, Zero};
+use ark_std::Zero;
 use core::marker::PhantomData;
-
 
 use super::{
     circuits::CF2, nifs::NIFS, CurrentInstance, CycleFoldCommittedInstance, Nova, RunningInstance,
@@ -27,7 +24,6 @@ use crate::{Error, MSM};
 /// other more efficient approaches can be used.
 use ark_crypto_primitives::crh::poseidon::constraints::CRHParametersVar;
 use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
-use ark_poly::Polynomial;
 use ark_r1cs_std::{
     alloc::{AllocVar, AllocationMode},
     boolean::Boolean,
@@ -39,7 +35,6 @@ use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, Namespace,
 use ark_std::log2;
 use core::borrow::Borrow;
 
-
 use super::circuits::ChallengeGadget;
 use crate::ccs::r1cs::R1CS;
 use crate::folding::circuits::nonnative::uint::NonNativeUintVar;
@@ -47,13 +42,7 @@ use crate::folding::nova::{
     circuits::{CurrentInstanceVar, RunningInstanceVar, CF1},
     Witness,
 };
-use crate::transcript::{
-    Transcript, TranscriptVar,
-};
-use crate::utils::{
-    gadgets::{MatrixGadget, SparseMatrixVar, VectorGadget},
-    vec::poly_from_vec,
-};
+use crate::utils::gadgets::{MatrixGadget, SparseMatrixVar, VectorGadget};
 
 #[derive(Debug, Clone)]
 pub struct RelaxedR1CSGadget {}
@@ -454,14 +443,10 @@ where
             &u_i.cmQ.to_constraint_field()?,
         )?)?;
 
-        #[cfg(feature = "light-test")]
-        println!("[WARNING]: Running with the 'light-test' feature, skipping the big part of the DeciderEthCircuit.\n           Only for testing purposes.");
-
         // The following two checks (and their respective allocations) are disabled for normal
         // tests since they take several millions of constraints and would take several minutes
         // (and RAM) to run the test. It is active by default, and not active only when
         // 'light-test' feature is used.
-        #[cfg(not(feature = "light-test"))]
         {
             // imports here instead of at the top of the file, so we avoid having multiple
             // `#[cfg(not(test))]`
@@ -563,7 +548,7 @@ fn evaluate_gadget<F: PrimeField>(
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use ark_bn254::{constraints::GVar, Fq, Fr, G1Projective as Projective};
+    use ark_bn254::{constraints::GVar, Bn254, Fq, Fr, G1Projective as Projective};
     use ark_crypto_primitives::crh::{
         sha256::{
             constraints::{Sha256Gadget, UnitVar},
@@ -812,6 +797,8 @@ pub mod tests {
         assert!(cs.is_satisfied().unwrap());
     }
 
+    use crate::utils::vec::poly_from_vec;
+    use num_traits::One;
     use std::time::Instant;
 
     #[test]
@@ -838,7 +825,6 @@ pub mod tests {
             NOVA,           // here we define the FoldingScheme to use
         >;
 
-        let mut rng = ark_std::test_rng();
         let poseidon_config = poseidon_test_config::<Fr>();
 
         let F_circuit = CubicFCircuit::<Fr>::new(());
